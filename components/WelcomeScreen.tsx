@@ -27,14 +27,16 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({ onProfileCreate })
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-indigo-100 dark:from-slate-900 dark:to-indigo-950 flex items-center justify-center p-4">
-      <div className="w-full max-w-md bg-white dark:bg-slate-800 rounded-2xl shadow-xl p-8 space-y-6 transition-all">
+    <div className="min-h-screen bg-slate-100 dark:bg-slate-900 flex items-center justify-center p-4 animate-fade-in">
+      <div className="w-full max-w-lg bg-white dark:bg-slate-800/50 dark:backdrop-blur-sm dark:border dark:border-slate-700 rounded-2xl shadow-2xl p-8 space-y-8">
         <div className="text-center">
-          <h1 className="text-4xl font-bold text-slate-800 dark:text-slate-100">Welcome to Teststar</h1>
+          <h1 className="text-4xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-indigo-500 to-purple-500">
+            Welcome to Teststar
+          </h1>
           <p className="text-slate-500 dark:text-slate-400 mt-2">Your AI-powered learning companion</p>
         </div>
         
-        {error && <p className="text-red-500 text-center bg-red-100 p-3 rounded-lg">{error}</p>}
+        {error && <p className="text-red-500 text-center bg-red-100 dark:bg-red-500/10 dark:text-red-400 p-3 rounded-lg animate-scale-in">{error}</p>}
 
         <form onSubmit={handleSubmit} className="space-y-6">
           <div>
@@ -44,7 +46,7 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({ onProfileCreate })
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              className="w-full px-4 py-2 border border-slate-300 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition"
+              className="w-full px-4 py-2.5 border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-700/50 dark:text-slate-100 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition"
               placeholder="e.g., Rohan Kumar"
               required
             />
@@ -59,7 +61,7 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({ onProfileCreate })
                 onChange={(e) => setGrade(e.target.value === '' ? '' : parseInt(e.target.value))}
                 min="1"
                 max="12"
-                className="w-full px-4 py-2 border border-slate-300 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition"
+                className="w-full px-4 py-2.5 border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-700/50 dark:text-slate-100 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition"
                 placeholder="e.g., 8"
                 required
               />
@@ -71,7 +73,7 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({ onProfileCreate })
                 type="date"
                 value={dob}
                 onChange={(e) => setDob(e.target.value)}
-                className="w-full px-4 py-2 border border-slate-300 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition"
+                className="w-full px-4 py-2.5 border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-700/50 dark:text-slate-100 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition"
                 required
               />
             </div>
@@ -82,7 +84,7 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({ onProfileCreate })
               id="board"
               value={board}
               onChange={(e) => setBoard(e.target.value)}
-              className={`w-full px-4 py-2 border border-slate-300 dark:border-slate-600 dark:bg-slate-700 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition bg-white ${!board ? 'text-slate-400' : 'text-slate-900 dark:text-slate-100'}`}
+              className={`w-full px-4 py-2.5 border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-700/50 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition ${!board ? 'text-slate-400' : 'text-slate-900 dark:text-slate-100'}`}
               required
             >
               <option value="" disabled>Select your board</option>
@@ -91,7 +93,7 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({ onProfileCreate })
           </div>
           <button
             type="submit"
-            className="w-full bg-indigo-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-indigo-700 focus:outline-none focus:ring-4 focus:ring-indigo-500 focus:ring-opacity-50 transition-transform transform hover:scale-105"
+            className="w-full bg-indigo-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-indigo-700 focus:outline-none focus:ring-4 focus:ring-indigo-500 focus:ring-opacity-50 transition-all transform hover:scale-[1.02] active:scale-[0.98]"
           >
             Start Learning
           </button>

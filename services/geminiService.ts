@@ -1,5 +1,5 @@
 import { GoogleGenAI, Type, GenerateContentResponse, Chat } from "@google/genai";
-import { Question, ChatMessage, UserProfile, Difficulty } from '../types';
+import { Question, ChatMessage, UserProfile, Difficulty, Goal } from '../types';
 
 // FIX: Removed conditional API_KEY assignment to adhere to guidelines.
 // The API key must be provided via environment variables.
@@ -31,6 +31,38 @@ export const testSchema = {
         required: ["questionText", "questionType", "marks", "topic"]
     }
 };
+
+export const studyPlanSchema = {
+    type: Type.OBJECT,
+    properties: {
+        weeklyPlan: {
+            type: Type.ARRAY,
+            description: "An array of 7 objects, one for each day of the week.",
+            items: {
+                type: Type.OBJECT,
+                properties: {
+                    day: { type: Type.STRING, description: "The day of the week (e.g., Monday)." },
+                    focus: { type: Type.STRING, description: "A brief summary of the main focus for the day." },
+                    tasks: {
+                        type: Type.ARRAY,
+                        description: "A list of specific, actionable study tasks for the day.",
+                        items: {
+                            type: Type.OBJECT,
+                            properties: {
+                                description: { type: Type.STRING, description: "The task description." },
+                                completed: { type: Type.BOOLEAN, description: "Set to false by default." }
+                            },
+                            required: ["description", "completed"]
+                        }
+                    }
+                },
+                required: ["day", "focus", "tasks"]
+            }
+        }
+    },
+    required: ["weeklyPlan"]
+};
+
 
 export const generateTestQuestions = async (
     subject: string, 
@@ -153,25 +185,19 @@ Please provide a helpful explanation. Structure your response as follows:
     }
 };
 
-let chat: Chat | null = null;
+export const createTutorChat = (profile: UserProfile, withSearch: boolean): Chat => {
+    const config: any = {
+        systemInstruction: `You are Teststar AI, a friendly, patient, and highly knowledgeable tutor for a grade ${profile.grade} student studying under the ${profile.board} board. Your name is Nova. Explain concepts clearly and simply, using analogies relevant to their age. Be encouraging and helpful. Keep responses concise unless asked for details.`,
+    };
 
-export const getTutorResponse = async (newMessage: string, profile: UserProfile): Promise<string> => {
-    try {
-        if (!chat) {
-            chat = ai.chats.create({
-                model: 'gemini-2.5-flash',
-                config: {
-                    systemInstruction: `You are Teststar AI, a friendly, patient, and highly knowledgeable tutor for a grade ${profile.grade} student studying under the ${profile.board} board. Your name is Nova. Explain concepts clearly and simply, using analogies relevant to their age. Be encouraging and helpful. Keep responses concise unless asked for details.`,
-                },
-            });
-        }
-        
-        const response: GenerateContentResponse = await chat.sendMessage({ message: newMessage });
-        return response.text;
-    } catch (error) {
-        console.error("Error getting tutor response:", error);
-        throw new Error("Failed to get a response from the AI Tutor.");
+    if (withSearch) {
+        config.tools = [{ googleSearch: {} }];
     }
+
+    return ai.chats.create({
+        model: 'gemini-2.5-flash',
+        config,
+    });
 };
 
 export const generateFunContent = async (type: 'poem' | 'story', topic: string, grade: number): Promise<string> => {
@@ -205,15 +231,33 @@ export const generateStudyNotes = async (topic: string, grade: number, board: st
         
         Topic: "${topic}"
         
-        Generate concise, easy-to-understand study notes on this topic. The notes should be structured to be highly effective for learning and revision. Please include the following sections:
+        Generate concise, easy-to-understand study notes on this topic. The notes should be structured to be highly effective for learning and revision.
         
-        1.  **Introduction**: A brief, simple overview of the topic.
-        2.  **Key Concepts/Definitions**: A list of the most important terms and their clear, simple definitions. Use a bulleted list.
-        3.  **Main Points**: Explain the core concepts of the topic in a step-by-step or logical manner. Use numbered lists or bullet points to break down complex information.
-        4.  **Simple Examples**: Provide one or two relatable, age-appropriate examples to illustrate the main points.
-        5.  **Summary**: A short summary paragraph that recaps the most critical information.
+        IMPORTANT: Format the entire response as a single block of clean, simple HTML. Use only basic tags: <h2> for section titles, <p> for paragraphs, <ul> and <li> for bulleted lists, <ol> for numbered lists, and <strong> for important terms. Do NOT include <html>, <head>, or <body> tags.
+
+        Please include the following HTML structure:
         
-        Keep the language clear, simple, and engaging for a grade ${grade} student. Format the response cleanly using markdown for headings and lists.`;
+        <h2>Introduction</h2>
+        <p>A brief, simple overview of the topic.</p>
+        
+        <h2>Key Concepts/Definitions</h2>
+        <ul>
+          <li><strong>Important Term:</strong> Its clear, simple definition.</li>
+        </ul>
+        
+        <h2>Main Points</h2>
+        <ol>
+          <li>Explain the first core concept. Use paragraphs to break down complex information.</li>
+          <li>Explain the next core concept.</li>
+        </ol>
+        
+        <h2>Simple Examples</h2>
+        <p>Provide one or two relatable, age-appropriate examples to illustrate the main points.</p>
+        
+        <h2>Summary</h2>
+        <p>A short summary paragraph that recaps the most critical information.</p>
+        
+        Keep the language clear, simple, and engaging for a grade ${grade} student.`;
 
         const response: GenerateContentResponse = await ai.models.generateContent({
             model: 'gemini-2.5-flash',
@@ -274,5 +318,52 @@ export const generateRandomQuiz = async (grade: number, board: string): Promise<
     } catch (error) {
         console.error("Error generating random quiz:", error);
         throw new Error("Failed to generate a random quiz. Please try again.");
+    }
+};
+
+export const generateStudyPlan = async (weakAreas: string[], goals: Goal[], profile: UserProfile): Promise<any> => {
+    try {
+        const goalsString = goals.map(g => `- ${g.description}`).join('\n');
+
+        const prompt = `You are an expert academic coach for a grade ${profile.grade} student. 
+        
+        Based on the following information, create a structured, actionable, and encouraging 7-day study plan.
+        
+        **Student Profile:**
+        - Grade: ${profile.grade}
+        - Board: ${profile.board}
+        
+        **Identified Weak Areas (from past tests):**
+        ${weakAreas.length > 0 ? weakAreas.map(area => `- ${area}`).join('\n') : "- No specific weak areas identified yet. Focus on general revision."}
+        
+        **Active Goals:**
+        ${goals.length > 0 ? goalsString : "- No active goals set. Focus on building a consistent study habit."}
+        
+        **Instructions:**
+        1.  Create a plan for the next 7 days, starting from Monday.
+        2.  For each day, provide a main "focus" and a short list of 2-4 concrete "tasks".
+        3.  The tasks should directly address the weak areas and help achieve the stated goals.
+        4.  Mix different activities: revision, practice problems, taking a short quiz (suggested), and creating flashcards.
+        5.  Keep the daily workload manageable and include at least one rest day or a very light day.
+        6.  The tone should be positive and motivational.
+        
+        Return the entire plan as a single JSON object that strictly adheres to the provided schema.`;
+
+        const response: GenerateContentResponse = await ai.models.generateContent({
+            model: "gemini-2.5-flash",
+            contents: prompt,
+            config: {
+                responseMimeType: "application/json",
+                responseSchema: studyPlanSchema,
+                temperature: 0.6,
+            },
+        });
+
+        const jsonText = response.text.trim();
+        return JSON.parse(jsonText);
+
+    } catch (error) {
+        console.error("Error generating study plan:", error);
+        throw new Error("Failed to generate a study plan. The AI might be temporarily unavailable. Please try again later.");
     }
 };

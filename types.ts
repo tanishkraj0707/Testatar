@@ -37,7 +37,6 @@ export interface Answer {
 
 export interface Report {
   id:string;
-  testId: string;
   subject: string;
   chapter: string;
   score: number;
@@ -56,6 +55,7 @@ export interface Report {
 export interface ChatMessage {
     role: 'user' | 'model';
     text: string;
+    sources?: { title: string; uri: string }[];
 }
 
 export interface Goal {
@@ -79,6 +79,8 @@ export type AppView =
   | 'reports' 
   | 'reportDetail'
   | 'tutor'
+  | 'studyNotes'
   | 'poemsAndStories'
   | 'settings'
-  | 'goals';
+  | 'goals'
+  | 'studyPlanner';

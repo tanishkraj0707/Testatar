@@ -1,18 +1,52 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { UserProfile, AppView, Test, Answer, Report, ChatMessage, Question, FeedbackPreference, Difficulty, Goal } from './types';
 import { WelcomeScreen } from './components/WelcomeScreen';
+import { OnboardingTour } from './components/OnboardingTour';
 import * as Icons from './components/Icons';
 import { INDIA_BOARDS, BADGES } from './components/constants';
 import * as GeminiService from './services/geminiService';
 import * as BadgeService from './services/badgeService';
 import * as GoalService from './services/goalService';
+import { Chat } from '@google/genai';
 
 type Theme = 'light' | 'dark';
 
+// --- Custom Hooks ---
+
+function useLocalStorage<T>(key: string, initialValue: T): [T, React.Dispatch<React.SetStateAction<T>>] {
+  const [storedValue, setStoredValue] = useState<T>(() => {
+    // Prevent SSR issues and ensure key is valid before accessing localStorage
+    if (typeof window === 'undefined' || !key) {
+        return initialValue;
+    }
+    try {
+      const item = window.localStorage.getItem(key);
+      return item ? JSON.parse(item) : initialValue;
+    } catch (error) {
+      console.error(error);
+      return initialValue;
+    }
+  });
+
+  const setValue = (value: T | ((val: T) => T)) => {
+    if (!key) return; // Don't save if key is not provided (e.g., user is logged out)
+    try {
+      const valueToStore = value instanceof Function ? value(storedValue) : value;
+      setStoredValue(valueToStore);
+      window.localStorage.setItem(key, JSON.stringify(valueToStore));
+    } catch (error) {
+      console.error(error);
+    }
+  };
+
+  return [storedValue, setValue];
+}
+
+
 // --- Helper & UI Components ---
 
-const Spinner: React.FC = () => (
-    <div className="flex justify-center items-center h-full p-8">
+const Spinner: React.FC<{ fullscreen?: boolean }> = ({ fullscreen = false }) => (
+    <div className={`flex justify-center items-center h-full p-8 ${fullscreen ? 'fixed inset-0 bg-slate-100/80 dark:bg-slate-900/80 backdrop-blur-sm z-50' : ''}`}>
         <Icons.LoaderIcon className="w-12 h-12 text-indigo-500 animate-spin" />
     </div>
 );
@@ -62,13 +96,13 @@ const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
 
   return (
     <div 
-        className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4" 
+        className="fixed inset-0 bg-black bg-opacity-60 z-50 flex items-center justify-center p-4" 
         role="dialog" 
         aria-modal="true" 
         aria-labelledby="dialog-title"
         onKeyDown={handleKeyDown}
     >
-      <div className="bg-white dark:bg-slate-800 rounded-xl shadow-lg w-full max-w-md p-6 transform transition-all" role="document">
+      <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-lg w-full max-w-md p-6 transform transition-all animate-scale-in" role="document">
         <h2 id="dialog-title" className="text-xl font-bold text-slate-800 dark:text-slate-100">{title}</h2>
         <p className="mt-2 text-slate-600 dark:text-slate-300">{message}</p>
         <div className="mt-6 flex justify-end space-x-4">
@@ -129,15 +163,15 @@ const ScoreCircle: React.FC<{ score: number }> = ({ score }) => {
     const clampedScore = Math.max(0, Math.min(100, score));
     const circumference = 2 * Math.PI * 45;
     const strokeDashoffset = circumference - (clampedScore / 100) * circumference;
-    const scoreColor = clampedScore >= 75 ? 'text-emerald-500 dark:text-emerald-400' : clampedScore >= 40 ? 'text-amber-500 dark:text-amber-400' : 'text-red-500 dark:text-red-400';
+    const scoreColor = clampedScore >= 75 ? 'text-emerald-500' : clampedScore >= 40 ? 'text-amber-500' : 'text-red-500';
 
     return (
         <div className="relative w-32 h-32">
             <svg className="w-full h-full" viewBox="0 0 100 100">
-                <circle className="text-slate-200 dark:text-slate-700" strokeWidth="10" stroke="currentColor" fill="transparent" r="45" cx="50" cy="50" />
+                <circle className="text-slate-200 dark:text-slate-700" strokeWidth="12" stroke="currentColor" fill="transparent" r="45" cx="50" cy="50" />
                 <circle
                     className={scoreColor}
-                    strokeWidth="10"
+                    strokeWidth="12"
                     strokeDasharray={circumference}
                     strokeDashoffset={strokeDashoffset}
                     strokeLinecap="round"
@@ -147,6 +181,7 @@ const ScoreCircle: React.FC<{ score: number }> = ({ score }) => {
                     cx="50"
                     cy="50"
                     transform="rotate(-90 50 50)"
+                    style={{transition: 'stroke-dashoffset 0.8s ease-out'}}
                 />
             </svg>
             <span className={`absolute inset-0 flex items-center justify-center text-3xl font-bold ${scoreColor}`}>
@@ -157,11 +192,11 @@ const ScoreCircle: React.FC<{ score: number }> = ({ score }) => {
 };
 
 const getPerformanceFeedback = (score: number) => {
-    if (score >= 90) return { text: "Excellent!", color: "text-emerald-600 dark:text-emerald-400" };
-    if (score >= 75) return { text: "Great Job!", color: "text-green-600 dark:text-green-400" };
-    if (score >= 60) return { text: "Good Effort!", color: "text-sky-600 dark:text-sky-400" };
-    if (score >= 40) return { text: "Keep Practicing!", color: "text-amber-600 dark:text-amber-400" };
-    return { text: "Needs Improvement", color: "text-red-600 dark:text-red-400" };
+    if (score >= 90) return { text: "Excellent!", color: "text-emerald-500" };
+    if (score >= 75) return { text: "Great Job!", color: "text-green-500" };
+    if (score >= 60) return { text: "Good Effort!", color: "text-sky-500" };
+    if (score >= 40) return { text: "Keep Practicing!", color: "text-amber-500" };
+    return { text: "Needs Improvement", color: "text-red-500" };
 };
 
 const ReportCard: React.FC<{ report: Report }> = ({ report }) => {
@@ -170,35 +205,30 @@ const ReportCard: React.FC<{ report: Report }> = ({ report }) => {
     const avgTimePerQ = report.totalQuestions > 0 ? (report.timeTaken / report.totalQuestions) : 0;
     const performance = getPerformanceFeedback(report.score);
 
+    const Stat: React.FC<{label: string; value: string}> = ({ label, value}) => (
+        <div className="text-center md:text-left">
+            <p className="text-3xl font-bold text-slate-800 dark:text-slate-100">{value}</p>
+            <p className="text-sm text-slate-500 dark:text-slate-400">{label}</p>
+        </div>
+    );
+
     return (
-        <div className="bg-white dark:bg-slate-800 rounded-xl shadow-lg p-6 mb-8">
+        <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-lg p-6">
             <div className="flex flex-col md:flex-row items-center gap-8">
                 <div className="flex-shrink-0">
                     <ScoreCircle score={report.score} />
                     {hasWrittenQuestions && <p className="text-xs text-slate-500 dark:text-slate-400 mt-2 text-center">(Score based on MCQs)</p>}
                 </div>
-                <div className="w-full space-y-4">
+                <div className="w-full space-y-6">
                     <div className="text-center md:text-left">
                         <p className={`text-2xl font-bold ${performance.color}`}>{performance.text}</p>
                         <p className="text-slate-500 dark:text-slate-400">Here's a summary of your performance.</p>
                     </div>
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-center border-t dark:border-slate-700 pt-4">
-                        <div>
-                            <p className="text-2xl font-bold text-slate-800 dark:text-slate-100">{report.marksScored}/{report.totalMarks}</p>
-                            <p className="text-sm text-slate-500 dark:text-slate-400">Marks Scored</p>
-                        </div>
-                        <div>
-                            <p className="text-2xl font-bold text-slate-800 dark:text-slate-100">{accuracy.toFixed(0)}%</p>
-                            <p className="text-sm text-slate-500 dark:text-slate-400">Accuracy</p>
-                        </div>
-                        <div>
-                            <p className="text-2xl font-bold text-slate-800 dark:text-slate-100">{Math.floor(report.timeTaken / 60)}m {report.timeTaken % 60}s</p>
-                            <p className="text-sm text-slate-500 dark:text-slate-400">Time Taken</p>
-                        </div>
-                        <div>
-                            <p className="text-2xl font-bold text-slate-800 dark:text-slate-100">{avgTimePerQ.toFixed(1)}s</p>
-                            <p className="text-sm text-slate-500 dark:text-slate-400">Avg. Time / Q</p>
-                        </div>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 border-t dark:border-slate-700 pt-4">
+                       <Stat label="Marks Scored" value={`${report.marksScored}/${report.totalMarks}`} />
+                       <Stat label="Accuracy" value={`${accuracy.toFixed(0)}%`} />
+                       <Stat label="Time Taken" value={`${Math.floor(report.timeTaken / 60)}m ${report.timeTaken % 60}s`} />
+                       <Stat label="Avg. Time / Q" value={`${avgTimePerQ.toFixed(1)}s`} />
                     </div>
                 </div>
             </div>
@@ -221,9 +251,9 @@ const QuestionNavigator: React.FC<QuestionNavigatorProps> = ({ totalQuestions, c
     };
 
     return (
-        <div className="bg-white dark:bg-slate-800 p-4 rounded-xl shadow-md">
-            <h3 className="text-sm font-semibold text-slate-600 dark:text-slate-300 mb-3">Question Map</h3>
-            <div className="flex flex-wrap gap-2">
+        <div className="bg-white dark:bg-slate-800 p-4 rounded-2xl shadow-lg">
+            <h3 className="text-sm font-semibold text-slate-600 dark:text-slate-300 mb-3 px-1">Question Map</h3>
+            <div className="grid grid-cols-5 gap-2">
                 {Array.from({ length: totalQuestions }).map((_, index) => {
                     const status =
                         index === currentQuestionIndex
@@ -232,12 +262,12 @@ const QuestionNavigator: React.FC<QuestionNavigatorProps> = ({ totalQuestions, c
                             ? 'answered'
                             : 'unanswered';
 
-                    const baseClasses = "w-9 h-9 flex items-center justify-center rounded-md font-bold text-sm transition-all duration-200 cursor-pointer focus:outline-none focus:ring-2 focus:ring-offset-2";
+                    const baseClasses = "w-full aspect-square flex items-center justify-center rounded-lg font-bold text-sm transition-all duration-200 cursor-pointer focus:outline-none focus:ring-2 focus:ring-offset-2 dark:focus:ring-offset-slate-800";
                     let statusClasses = '';
 
                     switch (status) {
                         case 'current':
-                            statusClasses = 'bg-indigo-600 text-white ring-indigo-500';
+                            statusClasses = 'bg-indigo-600 text-white ring-indigo-500 shadow-md';
                             break;
                         case 'answered':
                             statusClasses = 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200 ring-emerald-400 dark:bg-emerald-500/20 dark:text-emerald-300 dark:hover:bg-emerald-500/30';
@@ -271,7 +301,7 @@ const ScoreTrendChart: React.FC<{ reports: Report[] }> = ({ reports }) => {
 
     if (sortedReports.length < 2) {
         return (
-            <div className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-md text-center">
+            <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl shadow-lg text-center">
                 <h3 className="text-xl font-bold text-slate-800 dark:text-slate-100 mb-2">Score Trend</h3>
                 <p className="text-slate-500 dark:text-slate-400">Complete at least two tests to see your progress chart.</p>
             </div>
@@ -292,7 +322,7 @@ const ScoreTrendChart: React.FC<{ reports: Report[] }> = ({ reports }) => {
     const pathD = points.map((p, i) => i === 0 ? `M ${p.x} ${p.y}` : `L ${p.x} ${p.y}`).join(' ');
 
     return (
-        <div className="bg-white dark:bg-slate-800 p-4 md:p-6 rounded-xl shadow-md">
+        <div className="bg-white dark:bg-slate-800 p-4 md:p-6 rounded-2xl shadow-lg">
             <h3 className="text-xl font-bold text-slate-800 dark:text-slate-100 mb-4">Score Trend</h3>
             <div className="relative">
                 <svg viewBox={`0 0 ${svgWidth} ${svgHeight}`} className="w-full h-auto">
@@ -309,20 +339,20 @@ const ScoreTrendChart: React.FC<{ reports: Report[] }> = ({ reports }) => {
                         <text x={chartWidth} y={chartHeight + 20} textAnchor="end" fontSize="10" className="fill-slate-500 dark:fill-slate-400">{new Date(sortedReports[sortedReports.length - 1].date).toLocaleDateString()}</text>
 
                         {/* Line Graph */}
-                        <path d={pathD} fill="none" stroke="#4f46e5" strokeWidth="2" />
+                        <path d={pathD} fill="none" stroke="#4f46e5" strokeWidth="2.5" />
                         
                         {/* Data Points */}
                         {points.map((p, i) => (
-                            <circle key={i} cx={p.x} cy={p.y} r="4" fill="#4f46e5" stroke="white" strokeWidth="2" 
+                            <circle key={i} cx={p.x} cy={p.y} r="5" fill="#4f46e5" stroke="white" strokeWidth="2" 
                                 onMouseEnter={() => setActivePoint(i)}
                                 onMouseLeave={() => setActivePoint(null)}
-                                className="cursor-pointer"
+                                className="cursor-pointer transition-transform duration-200 hover:scale-125"
                             />
                         ))}
                     </g>
                 </svg>
                 {activePoint !== null && (
-                    <div className="absolute bg-slate-800 text-white text-xs rounded py-1 px-2 pointer-events-none" style={{
+                    <div className="absolute bg-slate-800 text-white text-xs rounded py-1 px-2 pointer-events-none animate-scale-in" style={{
                         left: `${(padding.left + points[activePoint].x) / svgWidth * 100}%`,
                         top: `${(padding.top + points[activePoint].y) / svgHeight * 100}%`,
                         transform: 'translate(-50%, -120%)'
@@ -339,7 +369,9 @@ const AnswerBreakdownPieChart: React.FC<{ report: Report }> = ({ report }) => {
     const data = useMemo(() => {
         const correct = report.answers.filter(a => a.isCorrect === true).length;
         const incorrect = report.answers.filter(a => a.isCorrect === false).length;
-        const written = report.questions.filter(q => q.questionType !== 'MCQ').length;
+        const mcqAnswers = report.answers.filter(a => a.selectedOptionIndex !== undefined).length;
+        const written = report.questions.length - mcqAnswers;
+        
         return { correct, incorrect, written };
     }, [report]);
     
@@ -350,48 +382,48 @@ const AnswerBreakdownPieChart: React.FC<{ report: Report }> = ({ report }) => {
     const radius = 45;
     const circumference = getCircumference(radius);
 
-    const correctPct = (data.correct / total);
-    const incorrectPct = (data.incorrect / total);
+    const correctPct = (data.correct / total) * circumference;
+    const incorrectPct = (data.incorrect / total) * circumference;
+    const writtenPct = (data.written / total) * circumference;
 
     const correctOffset = 0;
-    const incorrectOffset = circumference * correctPct;
-    const writtenOffset = circumference * (correctPct + incorrectPct);
+    const incorrectOffset = correctPct;
 
     return (
-        <div className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-md h-full">
+        <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl shadow-lg h-full">
             <h3 className="text-xl font-bold text-slate-800 dark:text-slate-100 mb-4">Answer Breakdown</h3>
             <div className="flex flex-col sm:flex-row items-center gap-6">
                 <div className="relative w-40 h-40 flex-shrink-0">
-                    <svg className="w-full h-full" viewBox="0 0 100 100" transform="rotate(-90)">
-                        <circle className="text-slate-200 dark:text-slate-700" strokeWidth="10" stroke="currentColor" fill="transparent" r={radius} cx="50" cy="50" />
-                        <circle className="text-emerald-500" strokeWidth="10" stroke="currentColor" fill="transparent" r={radius} cx="50" cy="50" 
-                            strokeDasharray={circumference}
-                            strokeDashoffset={-correctOffset}
-                            strokeLinecap="round"
+                    <svg className="w-full h-full" viewBox="0 0 100 100">
+                        <circle className="text-slate-200 dark:text-slate-700" strokeWidth="12" stroke="currentColor" fill="transparent" r={radius} cx="50" cy="50" />
+                        <circle className="text-emerald-500" strokeWidth="12" stroke="currentColor" fill="transparent" r={radius} cx="50" cy="50" 
+                            strokeDasharray={`${correctPct} ${circumference}`}
+                            transform="rotate(-90 50 50)"
                         />
-                         <circle className="text-red-500" strokeWidth="10" stroke="currentColor" fill="transparent" r={radius} cx="50" cy="50" 
-                            strokeDasharray={circumference}
+                         <circle className="text-red-500" strokeWidth="12" stroke="currentColor" fill="transparent" r={radius} cx="50" cy="50" 
+                            strokeDasharray={`${incorrectPct} ${circumference}`}
                             strokeDashoffset={-incorrectOffset}
-                             strokeLinecap="round"
+                            transform="rotate(-90 50 50)"
                         />
-                         <circle className="text-slate-400" strokeWidth="10" stroke="currentColor" fill="transparent" r={radius} cx="50" cy="50" 
-                            strokeDasharray={circumference}
-                            strokeDashoffset={-writtenOffset}
-                             strokeLinecap="round"
-                        />
+                         {data.written > 0 && <circle className="text-slate-400" strokeWidth="12" stroke="currentColor" fill="transparent" r={radius} cx="50" cy="50" 
+                            strokeDasharray={`${writtenPct} ${circumference}`}
+                            strokeDashoffset={-(incorrectOffset + correctPct)}
+                            transform="rotate(-90 50 50)"
+                        />}
                     </svg>
+                     <span className="absolute inset-0 flex items-center justify-center text-xl font-bold text-slate-700 dark:text-slate-200">{total} Qs</span>
                 </div>
                 <div className="space-y-3">
                     <div className="flex items-center">
-                        <span className="w-3 h-3 rounded-full bg-emerald-500 mr-2"></span>
+                        <span className="w-3 h-3 rounded-full bg-emerald-500 mr-3"></span>
                         <span className="font-semibold text-slate-700 dark:text-slate-200">{data.correct} Correct</span>
                     </div>
                     <div className="flex items-center">
-                        <span className="w-3 h-3 rounded-full bg-red-500 mr-2"></span>
+                        <span className="w-3 h-3 rounded-full bg-red-500 mr-3"></span>
                         <span className="font-semibold text-slate-700 dark:text-slate-200">{data.incorrect} Incorrect</span>
                     </div>
                     {data.written > 0 && <div className="flex items-center">
-                        <span className="w-3 h-3 rounded-full bg-slate-400 mr-2"></span>
+                        <span className="w-3 h-3 rounded-full bg-slate-400 mr-3"></span>
                         <span className="font-semibold text-slate-700 dark:text-slate-200">{data.written} Written (Not Graded)</span>
                     </div>}
                 </div>
@@ -402,36 +434,50 @@ const AnswerBreakdownPieChart: React.FC<{ report: Report }> = ({ report }) => {
 
 const TopicPerformanceChart: React.FC<{ report: Report }> = ({ report }) => {
     const topicData = useMemo(() => {
-        const data: { [topic: string]: { scored: number; total: number } } = {};
-        report.questions.forEach((q, i) => {
-            const ans = report.answers[i];
-            if (!data[q.topic]) {
-                data[q.topic] = { scored: 0, total: 0 };
+        const data: { [topic: string]: { total: number; correct: number } } = {};
+        report.questions.forEach((q, index) => {
+            const topic = q.topic || 'General';
+            if (!data[topic]) {
+                data[topic] = { total: 0, correct: 0 };
             }
-            data[q.topic].total += q.marks;
-            if (ans.isCorrect) {
-                data[q.topic].scored += q.marks;
+            // Only consider MCQs for automatic grading
+            if (q.questionType === 'MCQ') {
+                data[topic].total++;
+                if (report.answers[index]?.isCorrect) {
+                    data[topic].correct++;
+                }
             }
         });
-        return Object.entries(data).map(([topic, scores]) => ({
-            topic,
-            ...scores,
-            percentage: scores.total > 0 ? (scores.scored / scores.total) * 100 : 0,
-        }));
+
+        return Object.entries(data)
+            .filter(([, { total }]) => total > 0) // Only show topics with graded questions
+            .map(([topic, { total, correct }]) => ({
+                topic,
+                percentage: (correct / total) * 100,
+            }));
     }, [report]);
 
+    if (topicData.length === 0) {
+         return (
+            <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl shadow-lg text-center h-full flex flex-col justify-center">
+                <h3 className="text-xl font-bold text-slate-800 dark:text-slate-100 mb-2">Topic Performance</h3>
+                <p className="text-slate-500 dark:text-slate-400">No multiple-choice questions found to analyze performance.</p>
+            </div>
+        );
+    }
+    
     return (
-        <div className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-md">
-            <h3 className="text-xl font-bold text-slate-800 dark:text-slate-100 mb-4">Performance by Topic</h3>
+        <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl shadow-lg h-full">
+            <h3 className="text-xl font-bold text-slate-800 dark:text-slate-100 mb-4">Topic Performance</h3>
             <div className="space-y-4">
-                {topicData.map(({ topic, scored, total, percentage }) => (
+                {topicData.map(({ topic, percentage }) => (
                     <div key={topic}>
-                        <div className="flex justify-between items-center mb-1">
-                            <span className="text-sm font-semibold text-slate-700 dark:text-slate-200">{topic}</span>
-                            <span className="text-sm font-medium text-slate-500 dark:text-slate-400">{scored}/{total} Marks</span>
+                        <div className="flex justify-between mb-1">
+                            <span className="text-sm font-medium text-slate-700 dark:text-slate-200 capitalize">{topic}</span>
+                            <span className="text-sm font-medium text-slate-500 dark:text-slate-400">{percentage.toFixed(0)}%</span>
                         </div>
                         <div className="w-full bg-slate-200 dark:bg-slate-700 rounded-full h-2.5">
-                            <div className="bg-indigo-600 h-2.5 rounded-full" style={{ width: `${percentage}%` }}></div>
+                            <div className="bg-gradient-to-r from-indigo-500 to-purple-500 h-2.5 rounded-full" style={{ width: `${percentage}%` }}></div>
                         </div>
                     </div>
                 ))}
@@ -440,1614 +486,1355 @@ const TopicPerformanceChart: React.FC<{ report: Report }> = ({ report }) => {
     );
 };
 
-// --- Standalone View Components ---
+// --- Main Application Views ---
 
-interface ThemeToggleProps {
-  theme: Theme;
-  toggleTheme: () => void;
-}
-const ThemeToggle: React.FC<ThemeToggleProps> = ({ theme, toggleTheme }) => (
-    <button
-        onClick={toggleTheme}
-        className="w-full flex items-center justify-between px-4 py-3 rounded-lg text-slate-600 dark:text-slate-300 hover:bg-indigo-50 dark:hover:bg-slate-700 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors duration-200"
-        aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}
-    >
-        <span>{theme === 'light' ? 'Dark Mode' : 'Light Mode'}</span>
-        {theme === 'light' ? <Icons.MoonIcon className="w-5 h-5" /> : <Icons.SunIcon className="w-5 h-5" />}
-    </button>
-);
-
-
-interface SidebarProps {
-    userProfile: UserProfile;
+const MainLayout: React.FC<{
+    children: React.ReactNode;
     currentView: AppView;
-    onNavClick: (view: AppView) => void;
-    onLogout: () => void;
+    setView: (view: AppView) => void;
+    userProfile: UserProfile;
     theme: Theme;
     toggleTheme: () => void;
-}
-const Sidebar: React.FC<SidebarProps> = ({ userProfile, currentView, onNavClick, onLogout, theme, toggleTheme }) => {
+}> = ({ children, currentView, setView, userProfile, theme, toggleTheme }) => {
+    const [isSidebarOpen, setSidebarOpen] = useState(false);
+
     const navItems = [
-        { view: 'dashboard', icon: Icons.HomeIcon, label: 'Dashboard' },
-        { view: 'createTest', icon: Icons.FilePlusIcon, label: 'Create Test' },
-        { view: 'reports', icon: Icons.FileTextIcon, label: 'Reports' },
-        { view: 'goals', icon: Icons.TargetIcon, label: 'My Goals' },
-        { view: 'tutor', icon: Icons.MessageSquareIcon, label: 'AI Tutor' },
-        { view: 'poemsAndStories', icon: Icons.BookIcon, label: 'Fun Learning' },
-        { view: 'settings', icon: Icons.CogIcon, label: 'Settings' },
-    ];
+        { view: 'dashboard', label: 'Dashboard', icon: Icons.HomeIcon },
+        { view: 'createTest', label: 'New Test', icon: Icons.FilePlusIcon },
+        { view: 'reports', label: 'Reports', icon: Icons.BarChartIcon },
+        { view: 'tutor', label: 'AI Tutor', icon: Icons.MessageSquareIcon },
+        { view: 'studyNotes', label: 'Study Notes', icon: Icons.FileTextIcon },
+        { view: 'goals', label: 'Goals', icon: Icons.TargetIcon },
+        { view: 'studyPlanner', label: 'Study Planner', icon: Icons.CalendarIcon },
+        { view: 'poemsAndStories', label: 'Fun Zone', icon: Icons.PlayCircleIcon },
+        { view: 'settings', label: 'Settings', icon: Icons.CogIcon },
+    ] as const;
+
+    const NavLink: React.FC<{
+      view: AppView;
+      label: string;
+      icon: React.FC<{ className?: string }>;
+    }> = ({ view, label, icon: Icon }) => {
+      const isActive = currentView === view;
+      return (
+        <li key={view}>
+          <a
+            href="#"
+            onClick={(e) => {
+              e.preventDefault();
+              setView(view);
+              setSidebarOpen(false);
+            }}
+            className={`flex items-center p-3 rounded-lg transition-colors duration-200 relative ${
+              isActive
+                ? 'bg-indigo-50 text-indigo-700 dark:bg-slate-700 dark:text-white'
+                : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-700'
+            }`}
+          >
+            <Icon className="w-6 h-6 mr-3" />
+            <span className="font-semibold">{label}</span>
+          </a>
+        </li>
+      );
+    };
+
+    const Header: React.FC = () => (
+        <header className="bg-white/50 dark:bg-slate-800/50 backdrop-blur-sm sticky top-0 z-30 flex items-center justify-between h-20 px-4 md:px-8 border-b border-slate-200 dark:border-slate-700">
+            <div className="flex items-center gap-4">
+                <button
+                    onClick={() => setSidebarOpen(true)}
+                    className="md:hidden text-slate-500 dark:text-slate-400"
+                    aria-label="Open navigation menu"
+                >
+                    <Icons.MenuIcon className="w-6 h-6" />
+                </button>
+                <h1 className="text-2xl font-bold text-slate-800 dark:text-slate-100 capitalize">
+                    {currentView.replace(/([A-Z])/g, ' $1').trim()}
+                </h1>
+            </div>
+            <div className="flex items-center space-x-4">
+                 <button onClick={toggleTheme} className="text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 p-2 rounded-full transition" aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}>
+                    {theme === 'light' ? <Icons.MoonIcon className="w-5 h-5" /> : <Icons.SunIcon className="w-5 h-5" />}
+                </button>
+                <div className="flex items-center space-x-3">
+                    <div className="w-10 h-10 rounded-full bg-gradient-to-br from-indigo-500 to-purple-500 flex items-center justify-center text-white font-bold text-lg">
+                        {userProfile.name.charAt(0).toUpperCase()}
+                    </div>
+                    <div className="hidden sm:block">
+                        <p className="font-semibold text-slate-800 dark:text-slate-100">{userProfile.name}</p>
+                        <p className="text-xs text-slate-500 dark:text-slate-400">Grade {userProfile.grade}</p>
+                    </div>
+                </div>
+            </div>
+        </header>
+    );
 
     return (
-        <div className="w-64 bg-white dark:bg-slate-800 border-r border-slate-200 dark:border-slate-700 flex flex-col p-4 space-y-4 h-full">
-            <div className="px-4 py-2">
-                <h1 className="text-2xl font-bold text-indigo-600">Teststar</h1>
-            </div>
-            <nav className="flex-grow">
-                {navItems.map(item => (
-                    <button key={item.view} onClick={() => onNavClick(item.view as AppView)} className={`w-full flex items-center space-x-3 px-4 py-3 rounded-lg text-slate-600 dark:text-slate-300 hover:bg-indigo-50 dark:hover:bg-slate-700 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors duration-200 ${currentView === item.view ? 'bg-indigo-100 dark:bg-indigo-500/20 text-indigo-700 dark:text-indigo-300 font-semibold' : ''}`}>
-                        <item.icon className="w-6 h-6" />
-                        <span>{item.label}</span>
-                    </button>
-                ))}
-            </nav>
-            <div className="border-t border-slate-200 dark:border-slate-700 pt-4">
-                 <div className="mb-2">
-                    <ThemeToggle theme={theme} toggleTheme={toggleTheme} />
+        <div className="flex min-h-screen bg-slate-100 dark:bg-slate-900">
+            <aside className={`fixed inset-y-0 left-0 z-40 w-64 bg-white/80 backdrop-blur-lg dark:bg-slate-800/80 border-r border-slate-200 dark:border-slate-700 transform ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'} md:relative md:translate-x-0 transition-transform duration-300 ease-in-out`}>
+                <div className="flex items-center justify-center h-20 border-b border-slate-200 dark:border-slate-700">
+                    <h1 className="text-2xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-indigo-500 to-purple-500">Teststar AI</h1>
                 </div>
-                <div className="flex items-center space-x-3 p-2">
-                    <div className="w-10 h-10 rounded-full bg-indigo-500 text-white flex items-center justify-center font-bold text-lg flex-shrink-0">
-                        {userProfile?.name.charAt(0)}
-                    </div>
-                    <div className="truncate">
-                        <p className="font-semibold text-slate-800 dark:text-slate-100 truncate">{userProfile?.name}</p>
-                        <p className="text-sm text-slate-500 dark:text-slate-400">Grade {userProfile?.grade} | {userProfile?.board}</p>
-                    </div>
+                <nav className="p-4">
+                    <ul className="space-y-2">
+                        {navItems.map(item => <NavLink {...item} />)}
+                    </ul>
+                </nav>
+            </aside>
+             {isSidebarOpen && <div className="fixed inset-0 bg-black/30 z-30 md:hidden" onClick={() => setSidebarOpen(false)}></div>}
+            <main className="flex-1 flex flex-col">
+                <Header />
+                <div className="flex-1 p-4 md:p-8 overflow-y-auto">
+                    {children}
                 </div>
-                <button onClick={onLogout} className="w-full mt-4 text-sm text-slate-500 dark:text-slate-400 hover:text-red-600 dark:hover:text-red-500">Logout</button>
-            </div>
+            </main>
         </div>
     );
 };
 
-interface HeaderProps {
-    currentView: AppView;
-    viewingReport: Report | null;
-    onMenuClick: () => void;
-}
-const Header: React.FC<HeaderProps> = ({ currentView, viewingReport, onMenuClick }) => {
-    let title = "Dashboard";
-    if (currentView === 'createTest') title = "Create a Test";
-    if (currentView === 'reports') title = "My Reports";
-    if (currentView === 'reportDetail' && viewingReport) title = "Report Details";
-    if (currentView === 'goals') title = "My Study Goals";
-    if (currentView === 'tutor') title = "AI Tutor";
-    if (currentView === 'test') title = "Test in Progress";
-    if (currentView === 'results') title = "Test Results";
-    if (currentView === 'poemsAndStories') title = "Fun Learning";
-    if (currentView === 'settings') title = "Settings";
-  
-    return (
-        <header className="md:hidden fixed top-0 left-0 right-0 bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm shadow-sm z-20 h-16 flex items-center px-4">
-            <button onClick={onMenuClick} className="p-2 text-slate-600 dark:text-slate-300">
-                <Icons.MenuIcon className="w-6 h-6" />
-            </button>
-            <h1 className="text-lg font-semibold text-slate-800 dark:text-slate-100 ml-4 truncate">{title}</h1>
-        </header>
-    );
-};
+// ... ALL THE VIEW COMPONENTS WILL GO HERE ...
 
-interface DashboardViewProps {
+const ActionCard: React.FC<{
+    tourId: string;
+    gradient: string;
+    icon: React.FC<{className?: string}>;
+    title: string;
+    description: string;
+    buttonText: string;
+    buttonColor: string;
+    onClick: () => void;
+}> = ({ tourId, gradient, icon: Icon, title, description, buttonText, buttonColor, onClick }) => (
+    <div data-tour-id={tourId} className={`text-white p-6 rounded-2xl shadow-lg flex flex-col justify-between relative overflow-hidden ${gradient}`}>
+        <div className="relative z-10">
+            <h3 className="text-xl font-bold">{title}</h3>
+            <p className="opacity-80 mt-1 text-sm">{description}</p>
+            <button onClick={onClick} className={`mt-6 bg-white ${buttonColor} font-bold py-2 px-4 rounded-lg self-start hover:bg-opacity-90 transition-all transform hover:scale-105`}>
+                {buttonText}
+            </button>
+        </div>
+        <Icon className="absolute -right-4 -bottom-4 w-24 h-24 text-white opacity-20 transform rotate-[-15deg] pointer-events-none" />
+    </div>
+);
+
+const StatCard: React.FC<{ icon: React.FC<{ className?: string }>, label: string, value: string | number }> = ({ icon: Icon, label, value }) => (
+    <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl shadow-lg flex items-center gap-5">
+        <div className="flex-shrink-0 w-14 h-14 rounded-full bg-indigo-100 dark:bg-slate-700 flex items-center justify-center">
+            <Icon className="w-7 h-7 text-indigo-600 dark:text-indigo-400" />
+        </div>
+        <div>
+            <h3 className="font-semibold text-slate-600 dark:text-slate-300">{label}</h3>
+            <p className="text-3xl font-bold text-slate-900 dark:text-white">{value}</p>
+        </div>
+    </div>
+);
+
+const DashboardView: React.FC<{ 
     userProfile: UserProfile;
     reports: Report[];
     goals: Goal[];
-    setCurrentView: (view: AppView) => void;
-}
-const DashboardView: React.FC<DashboardViewProps> = ({ userProfile, reports, goals, setCurrentView }) => {
-    const avgScore = reports.length > 0 ? reports.reduce((acc, r) => acc + r.score, 0) / reports.length : 0;
-    const testsTaken = reports.length;
+    onStartTest: () => void;
+    onStartRandomQuiz: () => void;
+    onViewReport: (reportId: string) => void;
+    onViewGoals: () => void;
+}> = ({ userProfile, reports, goals, onStartTest, onStartRandomQuiz, onViewReport, onViewGoals }) => {
+    const totalTests = reports.length;
+    const avgScore = totalTests > 0 ? reports.reduce((sum, r) => sum + r.score, 0) / totalTests : 0;
+    const activeGoals = goals.filter(g => g.status === 'active');
+    const recentReports = [...reports].sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime()).slice(0, 3);
+
+    const subjectIcons: { [key: string]: React.FC<{ className?: string }> } = {
+        math: Icons.SigmaIcon,
+        science: Icons.AtomIcon,
+        english: Icons.BookIcon,
+        history: Icons.BookOpenIcon,
+        geography: Icons.GlobeIcon,
+    };
     
-    const userBadges = useMemo(() => {
-        return BADGES.filter(b => userProfile.badges?.includes(b.id));
-    }, [userProfile.badges]);
-
-    const weakAreasData = useMemo(() => {
-        const topicCounts: { [key: string]: number } = {};
-        reports.forEach(report => {
-            if (Array.isArray(report.weakAreas)) {
-                report.weakAreas.forEach(topic => {
-                    topicCounts[topic] = (topicCounts[topic] || 0) + 1;
-                });
+    const getSubjectIcon = (subject: string) => {
+        const lowerSub = subject.toLowerCase();
+        for (const key in subjectIcons) {
+            if (lowerSub.includes(key)) {
+                return subjectIcons[key];
             }
-        });
-        
-        const sortedTopics = Object.entries(topicCounts)
-            .map(([topic, count]) => ({ topic, count }))
-            .sort((a, b) => b.count - a.count)
-            .slice(0, 5);
-
-        if (sortedTopics.length === 0) {
-            return { topics: [], maxCount: 0 };
         }
-        
-        const maxCount = sortedTopics[0].count;
-
-        return { topics: sortedTopics, maxCount };
-    }, [reports]);
-
-    const activeGoals = useMemo(() => goals.filter(g => g.status === 'active').slice(0, 2), [goals]);
+        return Icons.FileTextIcon;
+    };
 
     return (
-        <div className="p-4 md:p-8 space-y-8">
+        <div className="space-y-8 animate-fade-in-up dashboard-background">
             <div>
-                <h2 className="text-3xl font-bold text-slate-800 dark:text-slate-100">Hello, {userProfile?.name}!</h2>
-                <p className="text-slate-500 dark:text-slate-400 mt-1">Let's make today a productive day.</p>
+                <h2 className="text-3xl font-bold text-slate-800 dark:text-slate-100">Welcome back, {userProfile.name.split(' ')[0]}!</h2>
+                <p className="text-slate-500 dark:text-slate-400">Ready to ace your next test? Let's get started.</p>
             </div>
 
-            <div className="space-y-6">
-                 <div className="bg-indigo-600 text-white p-6 rounded-xl shadow-lg flex flex-col md:flex-row justify-between items-center gap-4">
-                    <div>
-                        <h3 className="text-xl font-bold">Ready for a challenge?</h3>
-                        <p className="text-indigo-200 mt-1">Create a custom test on any topic you want to master.</p>
-                    </div>
-                    <button onClick={() => setCurrentView('createTest')} className="bg-white text-indigo-600 font-bold py-2 px-6 rounded-lg hover:bg-indigo-100 transition w-full md:w-auto flex-shrink-0">
-                        Create a Test
-                    </button>
-                </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                <ActionCard 
+                    tourId="create-test"
+                    gradient="bg-gradient-to-br from-indigo-500 to-purple-500"
+                    icon={Icons.FilePlusIcon}
+                    title="Start a New Test"
+                    description="Challenge yourself and track your progress."
+                    buttonText="Create Test"
+                    buttonColor="text-indigo-600"
+                    onClick={onStartTest}
+                />
+                <ActionCard 
+                    tourId="quick-quiz"
+                    gradient="bg-gradient-to-br from-teal-500 to-cyan-500"
+                    icon={Icons.LightningBoltIcon}
+                    title="Quick Quiz"
+                    description="A fun 5-question random challenge."
+                    buttonText="Start Quiz"
+                    buttonColor="text-teal-600"
+                    onClick={onStartRandomQuiz}
+                />
+                <StatCard icon={Icons.FileTextIcon} label="Total Tests Taken" value={totalTests} />
+                <StatCard icon={Icons.TargetIcon} label="Average Score" value={`${avgScore.toFixed(0)}%`} />
+            </div>
 
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                    <div className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-md">
-                        <h3 className="text-xl font-bold text-slate-800 dark:text-slate-100 mb-4">Your Progress</h3>
-                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-center">
-                            <div className="bg-slate-50 dark:bg-slate-700/50 p-4 rounded-lg">
-                                <p className="text-3xl font-bold text-indigo-600 dark:text-indigo-400">{testsTaken}</p>
-                                <p className="text-sm text-slate-500 dark:text-slate-400">Tests Taken</p>
-                            </div>
-                            <div className="bg-slate-50 dark:bg-slate-700/50 p-4 rounded-lg">
-                                <p className="text-3xl font-bold text-emerald-600 dark:text-emerald-400">{avgScore.toFixed(0)}%</p>
-                                <p className="text-sm text-slate-500 dark:text-slate-400">Average Score</p>
-                            </div>
-                            <div className="bg-slate-50 dark:bg-slate-700/50 p-4 rounded-lg flex flex-col items-center justify-center">
-                                <Icons.BarChartIcon className="w-8 h-8 text-amber-500 dark:text-amber-400 mb-1"/>
-                                <p className="text-sm text-slate-500 dark:text-slate-400">Keep it up!</p>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <div className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-md">
-                        <div className="flex justify-between items-center mb-4">
-                             <h3 className="text-xl font-bold text-slate-800 dark:text-slate-100">My Goals</h3>
-                             <button onClick={() => setCurrentView('goals')} className="text-sm font-semibold text-indigo-600 hover:underline">View All</button>
-                        </div>
-                        {activeGoals.length > 0 ? (
-                            <div className="space-y-4">
-                                {activeGoals.map(goal => {
-                                    const progress = goal.targetValue > 0 ? (goal.currentValue / goal.targetValue) * 100 : 0;
-                                    return (
-                                        <div key={goal.id}>
-                                            <div className="flex justify-between items-center mb-1">
-                                                <span className="text-sm font-semibold text-slate-700 dark:text-slate-200 truncate pr-2">{goal.description}</span>
-                                                <span className="text-sm font-medium text-slate-500 dark:text-slate-400">{goal.type === 'completion' ? `${Math.round(goal.currentValue)}/${goal.targetValue}` : `${goal.currentValue.toFixed(0)}% / ${goal.targetValue}%`}</span>
-                                            </div>
-                                            <div className="w-full bg-slate-200 dark:bg-slate-700 rounded-full h-2.5">
-                                                <div className="bg-indigo-600 h-2.5 rounded-full" style={{ width: `${progress}%` }}></div>
-                                            </div>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                <div data-tour-id="recent-reports">
+                    <h3 className="text-xl font-bold text-slate-800 dark:text-slate-100 mb-4">Recent Reports</h3>
+                    <div className="space-y-4">
+                        {recentReports.length > 0 ? recentReports.map(report => {
+                            const Icon = getSubjectIcon(report.subject);
+                            return (
+                                <div key={report.id} onClick={() => onViewReport(report.id)} className="bg-white dark:bg-slate-800 p-4 rounded-2xl shadow-lg flex items-center justify-between cursor-pointer hover:shadow-xl hover:scale-[1.02] transition-all">
+                                    <div className="flex items-center">
+                                        <div className="w-12 h-12 rounded-lg bg-indigo-100 dark:bg-slate-700 flex items-center justify-center mr-4">
+                                            <Icon className="w-6 h-6 text-indigo-600 dark:text-indigo-400" />
                                         </div>
-                                    )
-                                })}
-                            </div>
-                        ) : (
-                             <div className="text-center py-4 flex flex-col items-center justify-center">
-                                 <Icons.TargetIcon className="w-12 h-12 text-slate-300 dark:text-slate-600"/>
-                                 <p className="mt-2 text-slate-500 dark:text-slate-400 text-sm">You have no active goals. Set a goal to track your progress!</p>
-                            </div>
-                        )}
-                    </div>
-
-                    <div className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-md">
-                        <h3 className="text-xl font-bold text-slate-800 dark:text-slate-100 mb-4">Focus Areas</h3>
-                        {weakAreasData.topics.length > 0 ? (
-                             <div className="h-48 pt-4 border-t dark:border-slate-700">
-                                <div className="flex justify-around items-end h-full">
-                                    {weakAreasData.topics.map(item => (
-                                        <div key={item.topic} className="flex flex-col items-center w-1/5 text-center group" title={`${item.topic}: ${item.count} ${item.count > 1 ? 'mistakes' : 'mistake'}`}>
-                                            <span className="text-sm font-bold text-slate-600 dark:text-slate-300 mb-1">{item.count}</span>
-                                            <div className="w-8 bg-slate-200 dark:bg-slate-700 rounded-t-md flex-grow flex items-end">
-                                                <div 
-                                                    className="w-full bg-amber-400 group-hover:bg-amber-500 rounded-t-md transition-all duration-300" 
-                                                    style={{ height: `${(item.count / weakAreasData.maxCount) * 100}%` }}
-                                                ></div>
-                                            </div>
-                                            <span 
-                                                className="text-xs text-slate-500 dark:text-slate-400 mt-2 h-8 w-full break-words"
-                                            >
-                                                {item.topic}
-                                            </span>
+                                        <div>
+                                            <p className="font-bold text-slate-800 dark:text-slate-100">{report.subject} - {report.chapter}</p>
+                                            <p className="text-sm text-slate-500 dark:text-slate-400">{new Date(report.date).toLocaleDateString()}</p>
                                         </div>
-                                    ))}
-                                </div>
-                            </div>
-                        ) : (
-                            <div className="text-center py-4 flex flex-col items-center justify-center min-h-[150px]">
-                                 <Icons.TargetIcon className="w-12 h-12 text-slate-300 dark:text-slate-600"/>
-                                 <p className="mt-2 text-slate-500 dark:text-slate-400 text-sm">No specific weak areas identified. Keep up the great work!</p>
-                            </div>
-                        )}
-                    </div>
-                </div>
-
-                <div className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-md">
-                    <h3 className="text-xl font-bold text-slate-800 dark:text-slate-100 mb-4">Achievements</h3>
-                    {userBadges.length > 0 ? (
-                        <div className="flex flex-wrap gap-x-6 gap-y-4">
-                            {userBadges.map(badge => (
-                                <div key={badge.id} className="text-center group w-20" title={badge.description}>
-                                    <div className="relative">
-                                        <span className={`text-6xl ${badge.color} group-hover:scale-110 transition-transform duration-200 block`}>{badge.icon}</span>
                                     </div>
-                                    <p className="text-xs font-semibold text-slate-600 dark:text-slate-300 mt-1 truncate">{badge.name}</p>
+                                    <div className="text-right">
+                                        <p className="font-bold text-lg text-slate-800 dark:text-slate-100">{report.score.toFixed(0)}%</p>
+                                        <p className="text-sm text-slate-500 dark:text-slate-400">{report.marksScored}/{report.totalMarks}</p>
+                                    </div>
                                 </div>
-                            ))}
-                        </div>
-                    ) : (
-                        <div className="text-center py-8 flex flex-col items-center justify-center">
-                            <Icons.AwardIcon className="w-12 h-12 text-slate-300 dark:text-slate-600"/>
-                            <p className="mt-2 text-slate-500 dark:text-slate-400 text-sm">Your badges will appear here as you complete challenges!</p>
-                        </div>
-                    )}
+                            );
+                        }) : (
+                             <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl shadow-lg text-center">
+                                <p className="text-slate-500 dark:text-slate-400">You haven't completed any tests yet.</p>
+                            </div>
+                        )}
+                    </div>
                 </div>
-                
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
-                   <div onClick={() => setCurrentView('createTest')} className="bg-white dark:bg-slate-800 p-4 rounded-xl shadow-md hover:shadow-lg dark:hover:bg-slate-700 hover:-translate-y-1 transition-transform duration-300 cursor-pointer text-center">
-                       <Icons.FilePlusIcon className="w-10 h-10 mx-auto text-sky-500 dark:text-sky-400"/>
-                       <h4 className="font-semibold mt-2 text-slate-700 dark:text-slate-200">New Test</h4>
-                   </div>
-                   <div onClick={() => setCurrentView('tutor')} className="bg-white dark:bg-slate-800 p-4 rounded-xl shadow-md hover:shadow-lg dark:hover:bg-slate-700 hover:-translate-y-1 transition-transform duration-300 cursor-pointer text-center">
-                       <Icons.MessageSquareIcon className="w-10 h-10 mx-auto text-emerald-500 dark:text-emerald-400"/>
-                       <h4 className="font-semibold mt-2 text-slate-700 dark:text-slate-200">AI Tutor</h4>
-                   </div>
-                   <div onClick={() => setCurrentView('reports')} className="bg-white dark:bg-slate-800 p-4 rounded-xl shadow-md hover:shadow-lg dark:hover:bg-slate-700 hover:-translate-y-1 transition-transform duration-300 cursor-pointer text-center">
-                       <Icons.FileTextIcon className="w-10 h-10 mx-auto text-amber-500 dark:text-amber-400"/>
-                       <h4 className="font-semibold mt-2 text-slate-700 dark:text-slate-200">Reports</h4>
-                   </div>
-                   <div onClick={() => setCurrentView('poemsAndStories')} className="bg-white dark:bg-slate-800 p-4 rounded-xl shadow-md hover:shadow-lg dark:hover:bg-slate-700 hover:-translate-y-1 transition-transform duration-300 cursor-pointer text-center">
-                       <Icons.BookIcon className="w-10 h-10 mx-auto text-rose-500 dark:text-rose-400"/>
-                       <h4 className="font-semibold mt-2 text-slate-700 dark:text-slate-200">Fun Learning</h4>
-                   </div>
+                <div data-tour-id="active-goals">
+                    <h3 className="text-xl font-bold text-slate-800 dark:text-slate-100 mb-4">Active Goals</h3>
+                    <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl shadow-lg">
+                        {activeGoals.length > 0 ? (
+                             <div className="space-y-4">
+                                {activeGoals.slice(0, 3).map(goal => (
+                                    <div key={goal.id}>
+                                        <p className="font-semibold text-slate-700 dark:text-slate-200">{goal.description}</p>
+                                        <div className="w-full bg-slate-200 dark:bg-slate-700 rounded-full h-2.5 my-1">
+                                            <div className="bg-emerald-500 h-2.5 rounded-full" style={{ width: `${Math.min(100, (goal.currentValue / goal.targetValue) * 100)}%` }}></div>
+                                        </div>
+                                        <p className="text-xs text-slate-500 dark:text-slate-400">{GoalService.getMotivationalMessage(goal)}</p>
+                                    </div>
+                                ))}
+                                <button onClick={onViewGoals} className="text-indigo-600 dark:text-indigo-400 font-semibold mt-4 hover:underline">View All Goals</button>
+                            </div>
+                        ) : (
+                             <div className="text-center">
+                                <p className="text-slate-500 dark:text-slate-400">You have no active goals. Set one to stay motivated!</p>
+                                 <button onClick={onViewGoals} className="mt-4 bg-indigo-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-indigo-700 transition">
+                                    Set a Goal
+                                </button>
+                            </div>
+                        )}
+                    </div>
                 </div>
             </div>
         </div>
     );
 };
 
-interface CreateTestViewProps {
+// ... And so on for every other view
+const CreateTestView: React.FC<{
     userProfile: UserProfile;
-    isLoading: boolean;
-    setIsLoading: (loading: boolean) => void;
-    setError: (error: string | null) => void;
-    setCurrentTest: (test: Test | null) => void;
-    setTestAnswers: (answers: Answer[]) => void;
-    setCurrentView: (view: AppView) => void;
-    setCurrentQuestionIndex: (index: number) => void;
-}
-const CreateTestView: React.FC<CreateTestViewProps> = ({ userProfile, isLoading, setIsLoading, setError, setCurrentTest, setTestAnswers, setCurrentView, setCurrentQuestionIndex }) => {
+    onTestCreated: (test: Test) => void;
+    setLoading: (loading: boolean) => void;
+    setError: (error: string) => void;
+}> = ({ userProfile, onTestCreated, setLoading, setError }) => {
     const [subject, setSubject] = useState('');
     const [topic, setTopic] = useState('');
-    const [grade, setGrade] = useState<number | ''>(userProfile.grade);
-    const [board, setBoard] = useState(userProfile.board || '');
-    const [totalMarks, setTotalMarks] = useState<number | ''>(25);
+    const [totalMarks, setTotalMarks] = useState<number | ''>(10);
+    const [questionCounts, setQuestionCounts] = useState({ MCQ: 2, SHORT: 2, LONG: 1 });
     const [difficulty, setDifficulty] = useState<Difficulty>('Medium');
-    const [questionCounts, setQuestionCounts] = useState({ MCQ: 5, SHORT: 2, LONG: 1 });
-    const [formError, setFormError] = useState('');
 
-    const handleCountChange = (type: keyof typeof questionCounts, value: string) => {
-        const count = parseInt(value, 10);
-        setQuestionCounts(prev => ({
-            ...prev,
-            [type]: isNaN(count) || count < 0 ? 0 : count,
-        }));
-    };
-
-    const handleGenerateTest = async (e: React.FormEvent) => {
+    const handleCreateTest = async (e: React.FormEvent) => {
         e.preventDefault();
-        const totalQuestions = Object.values(questionCounts).reduce((sum, count) => sum + count, 0);
-
-        if (!subject || !topic || !totalMarks || totalQuestions === 0 || !grade || !board) {
-            setFormError('Please fill out all fields and specify at least one question.');
+        if (!subject || !topic || !totalMarks || Object.values(questionCounts).reduce((a,b) => a+b, 0) === 0) {
+            setError("Please fill all fields and specify at least one question.");
             return;
         }
-        if (totalMarks < 5 || totalMarks > 100) {
-            setFormError('Total marks must be between 5 and 100.');
-            return;
-        }
-        if (grade < 1 || grade > 12) {
-            setFormError('Please enter a valid grade (1-12).');
-            return;
-        }
-        setFormError('');
-        
-        if (!userProfile) return;
-
-        setIsLoading(true);
-        setError(null);
+        setLoading(true);
+        setError('');
         try {
-            const questions = await GeminiService.generateTestQuestions(subject, topic, Number(grade), board, Number(totalMarks), questionCounts, difficulty);
-            const newTest: Test = { 
-                id: Date.now().toString(), 
-                subject: subject, 
+            const questions = await GeminiService.generateTestQuestions(subject, topic, userProfile.grade, userProfile.board, totalMarks, questionCounts, difficulty);
+            onTestCreated({
+                id: `test_${Date.now()}`,
+                subject,
                 chapter: topic,
-                questions 
-            };
-            setCurrentTest(newTest);
-            setTestAnswers(new Array(questions.length).fill(null).map((_, i) => ({ questionIndex: i })));
-            setCurrentQuestionIndex(0);
-            setCurrentView('test');
+                questions
+            });
         } catch (err: any) {
-            setError(err.message || 'An unknown error occurred.');
+            setError(err.message || "Failed to create test.");
         } finally {
-            setIsLoading(false);
+            setLoading(false);
         }
     };
-
+    
     return (
-        <div className="p-4 md:p-8 max-w-2xl mx-auto">
-            <h2 className="text-3xl font-bold text-slate-800 dark:text-slate-100 mb-6">Create a New Test</h2>
-            <form onSubmit={handleGenerateTest} className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-md space-y-6">
-                {formError && <p className="text-red-500 text-center bg-red-100 p-3 rounded-lg">{formError}</p>}
-                
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div>
-                        <label htmlFor="subject" className="text-sm font-medium text-slate-700 dark:text-slate-300 block mb-2">Subject</label>
-                        <input id="subject" type="text" value={subject} onChange={e => setSubject(e.target.value)} placeholder="e.g., Physics" className="w-full px-4 py-2 border border-slate-300 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100 rounded-lg focus:ring-2 focus:ring-indigo-500" />
-                    </div>
-                    <div>
-                        <label htmlFor="topic" className="text-sm font-medium text-slate-700 dark:text-slate-300 block mb-2">Topic</label>
-                        <input id="topic" type="text" value={topic} onChange={e => setTopic(e.target.value)} placeholder="e.g., Laws of Motion" className="w-full px-4 py-2 border border-slate-300 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100 rounded-lg focus:ring-2 focus:ring-indigo-500" />
-                    </div>
-                    <div>
-                        <label htmlFor="grade" className="text-sm font-medium text-slate-700 dark:text-slate-300 block mb-2">Class/Grade</label>
-                        <input id="grade" type="number" value={grade} onChange={e => setGrade(e.target.value === '' ? '' : parseInt(e.target.value))} min="1" max="12" className="w-full px-4 py-2 border border-slate-300 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100 rounded-lg focus:ring-2 focus:ring-indigo-500" />
-                    </div>
-                    <div>
-                        <label htmlFor="board" className="text-sm font-medium text-slate-700 dark:text-slate-300 block mb-2">Board</label>
-                         <select
-                            id="board"
-                            value={board}
-                            onChange={(e) => setBoard(e.target.value)}
-                            className={`w-full px-4 py-2 border border-slate-300 dark:border-slate-600 dark:bg-slate-700 rounded-lg focus:ring-2 focus:ring-indigo-500 bg-white ${!board ? 'text-slate-400' : 'text-slate-900 dark:text-slate-100'}`}
-                            required
-                        >
-                            <option value="" disabled>Select your board</option>
-                            {INDIA_BOARDS.map((b) => <option key={b} value={b}>{b}</option>)}
-                        </select>
-                    </div>
+        <div className="max-w-2xl mx-auto animate-fade-in-up">
+            <form onSubmit={handleCreateTest} className="bg-white dark:bg-slate-800 p-8 rounded-2xl shadow-lg space-y-6">
+                 <div>
+                    <label htmlFor="subject" className="text-sm font-medium text-slate-700 dark:text-slate-300 block mb-2">Subject</label>
+                    <input id="subject" type="text" value={subject} onChange={e => setSubject(e.target.value)} placeholder="e.g., Physics" className="w-full px-4 py-2.5 border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-700/50 rounded-lg focus:ring-2 focus:ring-indigo-500" required />
                 </div>
-
+                 <div>
+                    <label htmlFor="topic" className="text-sm font-medium text-slate-700 dark:text-slate-300 block mb-2">Topic / Chapter</label>
+                    <input id="topic" type="text" value={topic} onChange={e => setTopic(e.target.value)} placeholder="e.g., Laws of Motion" className="w-full px-4 py-2.5 border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-700/50 rounded-lg focus:ring-2 focus:ring-indigo-500" required />
+                </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div>
                         <label htmlFor="totalMarks" className="text-sm font-medium text-slate-700 dark:text-slate-300 block mb-2">Total Marks</label>
-                        <input id="totalMarks" type="number" value={totalMarks} onChange={e => setTotalMarks(e.target.value === '' ? '' : parseInt(e.target.value))} min="5" max="100" className="w-full px-4 py-2 border border-slate-300 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100 rounded-lg focus:ring-2 focus:ring-indigo-500" />
+                        <input id="totalMarks" type="number" min="1" value={totalMarks} onChange={e => setTotalMarks(e.target.value === '' ? '' : parseInt(e.target.value))} className="w-full px-4 py-2.5 border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-700/50 rounded-lg focus:ring-2 focus:ring-indigo-500" required />
                     </div>
-                    <div>
+                     <div>
                         <label htmlFor="difficulty" className="text-sm font-medium text-slate-700 dark:text-slate-300 block mb-2">Difficulty</label>
-                        <select
-                            id="difficulty"
-                            value={difficulty}
-                            onChange={(e) => setDifficulty(e.target.value as Difficulty)}
-                            className="w-full px-4 py-2 border border-slate-300 dark:border-slate-600 dark:bg-slate-700 rounded-lg focus:ring-2 focus:ring-indigo-500 bg-white text-slate-900 dark:text-slate-100"
-                            required
-                        >
-                            <option value="Easy">Easy</option>
-                            <option value="Medium">Medium</option>
-                            <option value="Hard">Hard</option>
+                        <select id="difficulty" value={difficulty} onChange={e => setDifficulty(e.target.value as Difficulty)} className="w-full px-4 py-2.5 border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-700/50 rounded-lg focus:ring-2 focus:ring-indigo-500">
+                            <option>Easy</option>
+                            <option>Medium</option>
+                            <option>Hard</option>
                         </select>
                     </div>
                 </div>
 
-                <div>
+                 <div>
                     <label className="text-sm font-medium text-slate-700 dark:text-slate-300 block mb-2">Question Distribution</label>
-                    <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">Specify the number of questions for each type. Use 0 to exclude a type.</p>
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                        {(Object.keys(questionCounts) as Array<keyof typeof questionCounts>).map(type => (
-                            <div key={type}>
-                                <label htmlFor={`count-${type}`} className="text-sm font-medium text-slate-600 dark:text-slate-400 block mb-1">{type}</label>
-                                <input 
-                                    id={`count-${type}`}
-                                    type="number" 
-                                    value={questionCounts[type]} 
-                                    onChange={e => handleCountChange(type, e.target.value)} 
-                                    min="0"
-                                    className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100 rounded-lg focus:ring-2 focus:ring-indigo-500" 
-                                />
+                    <div className="grid grid-cols-3 gap-4 bg-slate-50 dark:bg-slate-700/50 p-4 rounded-lg">
+                        {(['MCQ', 'SHORT', 'LONG'] as const).map(type => (
+                             <div key={type}>
+                                <label htmlFor={`count-${type}`} className="text-xs font-medium text-slate-600 dark:text-slate-400 block mb-1">{type}s</label>
+                                <input id={`count-${type}`} type="number" min="0" value={questionCounts[type]} onChange={e => setQuestionCounts(prev => ({...prev, [type]: parseInt(e.target.value)}))} className="w-full text-center px-3 py-2 border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 rounded-md focus:ring-2 focus:ring-indigo-500" />
                             </div>
                         ))}
                     </div>
                 </div>
 
-                <button type="submit" className="w-full bg-indigo-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-indigo-700 focus:outline-none focus:ring-4 focus:ring-indigo-500/50 transition-transform transform hover:scale-105" disabled={isLoading}>
-                    {isLoading ? 'Generating...' : 'Generate Test'}
+                <button type="submit" className="w-full bg-indigo-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-indigo-700 focus:outline-none focus:ring-4 focus:ring-indigo-500/50 transition-all transform hover:scale-[1.02] shadow-md hover:shadow-lg">
+                    Generate Test
                 </button>
             </form>
         </div>
     );
 };
 
-interface TestTakerViewProps {
-    currentTest: Test;
-    testAnswers: Answer[];
-    setTestAnswers: (answers: Answer[]) => void;
-    confirmAndSubmitTest: (timeTaken: number) => void;
-    currentQuestionIndex: number;
-    setCurrentQuestionIndex: React.Dispatch<React.SetStateAction<number>>;
-    isLoading: boolean;
-}
-const TestTakerView: React.FC<TestTakerViewProps> = ({ currentTest, testAnswers, setTestAnswers, confirmAndSubmitTest, currentQuestionIndex, setCurrentQuestionIndex, isLoading }) => {
+const TestTakerView: React.FC<{
+    test: Test;
+    onSubmit: (answers: Answer[], timeTaken: number) => void;
+}> = ({ test, onSubmit }) => {
+    const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
+    const [answers, setAnswers] = useState<Answer[]>(() =>
+        Array.from({ length: test.questions.length }, (_, i) => ({ questionIndex: i }))
+    );
     const [startTime] = useState(Date.now());
+    const [isConfirming, setConfirming] = useState(false);
 
-    if (!currentTest) return null;
-    const question = currentTest.questions[currentQuestionIndex];
-    const answer = testAnswers[currentQuestionIndex];
-    
-    const handleAnswerChange = (optionIndex?: number, writtenAnswer?: string) => {
-        const newAnswers = [...testAnswers];
-        newAnswers[currentQuestionIndex] = { 
-            ...newAnswers[currentQuestionIndex], 
-            selectedOptionIndex: optionIndex,
-            writtenAnswer: writtenAnswer,
+    const timerInterval = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const [timeElapsed, setTimeElapsed] = useState(0);
+
+    useEffect(() => {
+        timerInterval.current = setInterval(() => {
+            setTimeElapsed(Math.floor((Date.now() - startTime) / 1000));
+        }, 1000);
+        return () => {
+            if (timerInterval.current) {
+                clearInterval(timerInterval.current);
+            }
         };
-        setTestAnswers(newAnswers);
+    }, [startTime]);
+
+    const handleAnswerChange = (answer: Partial<Answer>) => {
+        setAnswers(prev => {
+            const newAnswers = [...prev];
+            newAnswers[currentQuestionIndex] = {
+                ...newAnswers[currentQuestionIndex],
+                questionIndex: currentQuestionIndex,
+                ...answer
+            };
+            return newAnswers;
+        });
     };
     
+    const currentQuestion = test.questions[currentQuestionIndex];
+    const currentAnswer = answers[currentQuestionIndex];
+
+    const handleSubmit = () => {
+        setConfirming(false);
+        const timeTaken = Math.floor((Date.now() - startTime) / 1000);
+        onSubmit(answers, timeTaken);
+    };
+
     const handleNext = () => {
-        if (currentQuestionIndex < currentTest.questions.length - 1) {
-            setCurrentQuestionIndex(prev => prev + 1);
-        } else {
-            const timeTaken = Math.round((Date.now() - startTime) / 1000);
-            confirmAndSubmitTest(timeTaken);
+        if (currentQuestionIndex < test.questions.length - 1) {
+            setCurrentQuestionIndex(i => i + 1);
         }
     };
-
-    const handlePrevious = () => {
+    
+    const handlePrev = () => {
         if (currentQuestionIndex > 0) {
-            setCurrentQuestionIndex(prev => prev - 1);
+            setCurrentQuestionIndex(i => i + 1);
         }
     };
 
     return (
-        <div className="p-4 md:p-8 flex flex-col h-full max-w-4xl mx-auto">
-             <div className="flex justify-between items-baseline">
-                <div>
-                    <h2 className="text-xl md:text-2xl font-bold text-slate-800 dark:text-slate-100">{currentTest.subject}: {currentTest.chapter}</h2>
-                    <p className="text-slate-500 dark:text-slate-400">Question {currentQuestionIndex + 1} of {currentTest.questions.length}</p>
+        <div className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-8 animate-fade-in-up">
+            <ConfirmationModal 
+                isOpen={isConfirming}
+                title="Submit Test"
+                message="Are you sure you want to finish and submit your answers?"
+                onConfirm={handleSubmit}
+                onCancel={() => setConfirming(false)}
+                confirmText="Submit Now"
+                confirmButtonClass="bg-indigo-600 hover:bg-indigo-700"
+            />
+            <div className="lg:col-span-2 bg-white dark:bg-slate-800 p-8 rounded-2xl shadow-lg">
+                <div className="flex justify-between items-start mb-6">
+                    <div>
+                         <p className="text-sm text-indigo-600 dark:text-indigo-400 font-semibold">{test.subject} - {test.chapter}</p>
+                        <h2 className="text-xl font-bold text-slate-800 dark:text-slate-100 mt-1">Question {currentQuestionIndex + 1} of {test.questions.length}</h2>
+                    </div>
+                    <div className="text-right flex-shrink-0 bg-slate-100 dark:bg-slate-700 px-3 py-1 rounded-full">
+                        <p className="text-sm font-medium text-slate-600 dark:text-slate-300">{currentQuestion.marks} Marks</p>
+                    </div>
                 </div>
-                <div className="bg-indigo-100 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-300 font-bold text-sm px-3 py-1 rounded-full flex-shrink-0">
-                    {question.marks} {question.marks === 1 ? 'Mark' : 'Marks'}
+                <div className="prose dark:prose-invert max-w-none mb-8 text-lg">
+                    <p>{currentQuestion.questionText}</p>
+                </div>
+                
+                <div className="space-y-4">
+                    {currentQuestion.questionType === 'MCQ' && currentQuestion.options?.map((option, index) => (
+                        <label key={index} className={`flex items-center p-4 rounded-lg border-2 cursor-pointer transition-all duration-200 ${currentAnswer.selectedOptionIndex === index ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-500/10 shadow-inner' : 'border-slate-300 dark:border-slate-600 hover:border-indigo-400 dark:hover:border-indigo-500'}`}>
+                            <input type="radio" name={`q_${currentQuestionIndex}`} className="w-5 h-5 text-indigo-600 focus:ring-indigo-500" checked={currentAnswer.selectedOptionIndex === index} onChange={() => handleAnswerChange({ selectedOptionIndex: index })}/>
+                            <span className="ml-4 text-slate-700 dark:text-slate-200">{option}</span>
+                        </label>
+                    ))}
+                    {(currentQuestion.questionType === 'SHORT' || currentQuestion.questionType === 'LONG') && (
+                        <textarea 
+                            value={currentAnswer.writtenAnswer || ''}
+                            onChange={(e) => handleAnswerChange({ writtenAnswer: e.target.value })}
+                            rows={currentQuestion.questionType === 'SHORT' ? 4 : 8}
+                            className="w-full p-4 border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-700/50 rounded-lg focus:ring-2 focus:ring-indigo-500"
+                            placeholder="Type your answer here..."
+                        />
+                    )}
+                </div>
+
+                <div className="mt-8 flex justify-between items-center">
+                    <button onClick={handlePrev} disabled={currentQuestionIndex === 0} className="px-6 py-2 rounded-lg bg-slate-200 text-slate-800 font-semibold hover:bg-slate-300 transition disabled:opacity-50 disabled:cursor-not-allowed dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600">Previous</button>
+                    {currentQuestionIndex === test.questions.length - 1 ? (
+                        <button onClick={() => setConfirming(true)} className="px-6 py-2 rounded-lg bg-emerald-600 text-white font-semibold hover:bg-emerald-700 transition shadow-md hover:shadow-lg">Submit Test</button>
+                    ) : (
+                        <button onClick={handleNext} className="px-6 py-2 rounded-lg bg-indigo-600 text-white font-semibold hover:bg-indigo-700 transition shadow-md hover:shadow-lg">Next</button>
+                    )}
                 </div>
             </div>
 
-            <div className="my-6">
-                <QuestionNavigator
-                    totalQuestions={currentTest.questions.length}
+            <div className="space-y-6">
+                <div className="bg-white dark:bg-slate-800 p-4 rounded-2xl shadow-lg text-center">
+                    <p className="text-sm font-semibold text-slate-600 dark:text-slate-300">Time Elapsed</p>
+                    <p className="text-3xl font-bold text-slate-800 dark:text-slate-100 tabular-nums">{String(Math.floor(timeElapsed / 60)).padStart(2, '0')}:{String(timeElapsed % 60).padStart(2, '0')}</p>
+                </div>
+                <QuestionNavigator 
+                    totalQuestions={test.questions.length}
                     currentQuestionIndex={currentQuestionIndex}
-                    testAnswers={testAnswers}
-                    onJumpToQuestion={setCurrentQuestionIndex}
+                    testAnswers={answers}
+                    onJumpToQuestion={(index) => setCurrentQuestionIndex(index)}
                 />
             </div>
+        </div>
+    );
+};
 
-            <div className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-lg flex-grow">
-                <p className="text-lg font-semibold text-slate-800 dark:text-slate-100 mb-6 whitespace-pre-wrap">{question.questionText}</p>
-                
-                {question.questionType === 'MCQ' && question.options && (
-                    <div className="space-y-4">
-                        {question.options.map((option, index) => (
-                            <button key={index} onClick={() => handleAnswerChange(index, undefined)} className={`w-full text-left p-4 rounded-lg border-2 transition ${answer?.selectedOptionIndex === index ? 'bg-indigo-100 border-indigo-500 text-indigo-800 dark:bg-indigo-500/20 dark:border-indigo-500 dark:text-indigo-300 font-semibold' : 'bg-slate-50 border-slate-200 hover:border-indigo-400 text-slate-800 dark:bg-slate-700/50 dark:border-slate-700 dark:hover:border-indigo-500 dark:text-slate-200'}`}>
-                                {option}
-                            </button>
-                        ))}
-                    </div>
-                )}
-
-                {(question.questionType === 'SHORT' || question.questionType === 'LONG') && (
-                    <textarea
-                        value={answer?.writtenAnswer || ''}
-                        onChange={(e) => handleAnswerChange(undefined, e.target.value)}
-                        placeholder="Type your answer here..."
-                        rows={question.questionType === 'SHORT' ? 4 : 8}
-                        className="w-full p-3 border border-slate-300 dark:border-slate-600 dark:bg-slate-700/50 dark:text-slate-100 rounded-lg focus:ring-2 focus:ring-indigo-500 transition"
-                    />
+const ResultsView: React.FC<{
+    report: Report;
+    onViewDetails: () => void;
+    onGoToDashboard: () => void;
+}> = ({ report, onViewDetails, onGoToDashboard }) => {
+     return (
+        <div className="max-w-4xl mx-auto space-y-8 animate-fade-in-up">
+            <div className="text-center">
+                <h2 className="text-3xl font-bold text-slate-800 dark:text-slate-100 mb-2">Test Completed!</h2>
+                <p className="text-slate-500 dark:text-slate-400">Well done for completing the test. Here are your results.</p>
+            </div>
+            <ReportCard report={report} />
+            
+            <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-lg p-6">
+                <h3 className="text-xl font-bold text-slate-800 dark:text-slate-100 mb-4">Weak Areas Identified</h3>
+                 {report.weakAreas.length > 0 ? (
+                    <ul className="list-disc list-inside space-y-2 text-slate-600 dark:text-slate-300">
+                        {report.weakAreas.map(area => <li key={area}>{area}</li>)}
+                    </ul>
+                ) : (
+                    <p className="text-slate-500 dark:text-slate-400">Great job! No specific weak areas were identified in this test.</p>
                 )}
             </div>
-            <div className="mt-6 flex justify-between items-center">
-                <button
-                    onClick={handlePrevious}
-                    disabled={currentQuestionIndex === 0 || isLoading}
-                    className="bg-slate-200 text-slate-700 font-bold py-3 px-6 rounded-lg hover:bg-slate-300 transition disabled:bg-slate-100 disabled:text-slate-400 disabled:cursor-not-allowed dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600 dark:disabled:bg-slate-800 dark:disabled:text-slate-500"
-                >
-                    Previous
+
+             <div className="flex justify-center gap-4">
+                <button onClick={onGoToDashboard} className="px-6 py-3 rounded-lg bg-slate-200 text-slate-800 font-semibold hover:bg-slate-300 transition dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600">
+                    Go to Dashboard
                 </button>
-                <button 
-                    onClick={handleNext} 
-                    disabled={isLoading}
-                    className="bg-indigo-600 text-white font-bold py-3 px-6 rounded-lg hover:bg-indigo-700 transition flex items-center justify-center min-w-[160px] disabled:bg-indigo-400 disabled:cursor-wait"
-                >
-                    {currentQuestionIndex < currentTest.questions.length - 1 ? (
-                        'Next Question'
-                    ) : isLoading ? (
-                        <>
-                            <Icons.LoaderIcon className="w-5 h-5 mr-2 animate-spin" />
-                            Submitting...
-                        </>
-                    ) : (
-                        'Submit Test'
-                    )}
+                <button onClick={onViewDetails} className="px-6 py-3 rounded-lg bg-indigo-600 text-white font-semibold hover:bg-indigo-700 transition shadow-md hover:shadow-lg">
+                    View Detailed Report
                 </button>
             </div>
         </div>
     );
 };
 
-interface TestResultsViewProps {
-    testResult: Report;
+
+const ReportsView: React.FC<{
     reports: Report[];
-    saveReport: () => void;
-    setCurrentView: (view: AppView) => void;
-}
-const TestResultsView: React.FC<TestResultsViewProps> = ({ testResult, reports, saveReport, setCurrentView }) => {
-    const isAlreadySaved = reports.some(r => r.id === testResult.id);
-    
-    if (!testResult) return null;
-
+    onViewReport: (reportId: string) => void;
+    onDeleteReport: (reportId: string) => void;
+}> = ({ reports, onViewReport, onDeleteReport }) => {
+     const sortedReports = [...reports].sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
     return (
-        <div className="p-4 md:p-8">
-            <h2 className="text-3xl font-bold text-slate-800 dark:text-slate-100 mb-2">Test Complete!</h2>
-            <p className="text-slate-500 dark:text-slate-400 mb-6">{testResult.subject}: {testResult.chapter}</p>
-            
-            <ReportCard report={testResult} />
-
-            <div className="mb-8">
-                <h3 className="text-xl font-semibold mb-4 text-slate-800 dark:text-slate-100">Review Your Answers</h3>
-                <div className="space-y-4">
-                    {testResult.questions.map((q, i) => {
-                        const ans = testResult.answers[i];
-                        const isMcq = q.questionType === 'MCQ';
-                        return (
-                            <div key={i} className="bg-white dark:bg-slate-800 p-4 rounded-lg shadow-sm border-l-4" 
-                                style={{borderColor: ans.isCorrect === true ? '#10B981' : ans.isCorrect === false ? '#EF4444' : '#64748B'}}>
-                                <div className="mb-3">
-                                    <div className="flex justify-between items-start">
-                                        <p className="font-semibold text-slate-800 dark:text-slate-100 whitespace-pre-wrap flex-1">{i + 1}. {q.questionText}</p>
-                                        <span className="text-xs font-bold bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 px-2 py-1 rounded-full ml-4 flex-shrink-0">{q.marks} marks</span>
-                                    </div>
+        <div className="max-w-4xl mx-auto animate-fade-in-up">
+            <div className="space-y-4">
+                {sortedReports.length > 0 ? (
+                    sortedReports.map(report => (
+                        <div key={report.id} onClick={() => onViewReport(report.id)} className="bg-white dark:bg-slate-800 p-5 rounded-2xl shadow-lg flex items-center justify-between cursor-pointer group hover:shadow-xl transition-all hover:scale-[1.02]">
+                            <div>
+                                <p className="font-bold text-lg text-slate-800 dark:text-slate-100">{report.subject} - {report.chapter}</p>
+                                <p className="text-sm text-slate-500 dark:text-slate-400">{new Date(report.date).toLocaleString()}</p>
+                            </div>
+                            <div className="flex items-center gap-4">
+                                <div className="text-right">
+                                    <p className="font-bold text-xl text-indigo-600 dark:text-indigo-400">{report.score.toFixed(0)}%</p>
+                                    <p className="text-sm text-slate-500 dark:text-slate-400">{report.marksScored}/{report.totalMarks} Marks</p>
                                 </div>
-                                
-                                {isMcq ? (
-                                    <div className="mt-2 pt-2 border-t dark:border-slate-700">
-                                        <p className={`text-sm mt-2 ${ans.isCorrect ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
-                                            Your answer: {q.options?.[ans.selectedOptionIndex ?? -1] ?? 'Not answered'} {ans.isCorrect ? <Icons.CheckCircleIcon className="inline w-4 h-4 ml-1" /> : <Icons.XCircleIcon className="inline w-4 h-4 ml-1" />}
-                                        </p>
-                                        {!ans.isCorrect && (
-                                            <div className="mt-3 pt-3 border-t dark:border-slate-700">
-                                                <p className="text-sm text-emerald-700 dark:text-emerald-500 font-medium">Correct answer: {q.options?.[q.correctOptionIndex!]}</p>
-                                                {testResult.feedbackPreference === 'full' && ans.solution && (
-                                                    <p className="text-sm text-slate-600 dark:text-slate-300 mt-2 whitespace-pre-wrap">{ans.solution}</p>
-                                                )}
-                                            </div>
-                                        )}
-                                    </div>
-                                ) : (
-                                    <div className="mt-3 pt-3 border-t dark:border-slate-700 grid grid-cols-1 md:grid-cols-2 gap-4">
-                                        <div>
-                                            <h4 className="text-sm font-bold text-slate-700 dark:text-slate-200 mb-1">Your Answer</h4>
-                                            <p className="text-sm text-slate-600 dark:text-slate-300 bg-slate-50 dark:bg-slate-700/50 p-2 rounded whitespace-pre-wrap">{ans.writtenAnswer || "No answer provided."}</p>
-                                        </div>
-                                        <div>
-                                            <h4 className="text-sm font-bold text-emerald-700 dark:text-emerald-500 mb-1">Model Answer</h4>
-                                            <p className="text-sm text-slate-600 dark:text-slate-300 bg-emerald-50 dark:bg-emerald-900/50 p-2 rounded whitespace-pre-wrap">{q.modelAnswer}</p>
-                                        </div>
-                                    </div>
-                                )}
+                                <button
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        onDeleteReport(report.id);
+                                    }}
+                                    className="p-2 rounded-full text-slate-400 hover:bg-red-100 hover:text-red-600 dark:hover:bg-red-500/20 dark:hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100"
+                                    aria-label={`Delete report for ${report.subject} - ${report.chapter}`}
+                                >
+                                    <Icons.TrashIcon className="w-5 h-5" />
+                                </button>
+                            </div>
+                        </div>
+                    ))
+                ) : (
+                     <div className="text-center bg-white dark:bg-slate-800 p-8 rounded-2xl shadow-lg">
+                         <p className="text-slate-500 dark:text-slate-400">You haven't completed any tests yet. Create a new test to get started!</p>
+                     </div>
+                )}
+            </div>
+        </div>
+    );
+};
+
+const ReportDetailView: React.FC<{
+    report: Report;
+}> = ({ report }) => {
+    return (
+        <div className="max-w-7xl mx-auto space-y-8 animate-fade-in-up">
+            <div>
+                 <p className="text-slate-500 dark:text-slate-400">Test taken on {new Date(report.date).toLocaleString()}</p>
+            </div>
+            
+            <ReportCard report={report} />
+
+            <div className="grid grid-cols-1 lg:grid-cols-5 gap-8">
+                <div className="lg:col-span-3">
+                    <AnswerBreakdownPieChart report={report} />
+                </div>
+                <div className="lg:col-span-2">
+                     <TopicPerformanceChart report={report} />
+                </div>
+            </div>
+
+            <div>
+                <h3 className="text-2xl font-bold text-slate-800 dark:text-slate-100 mb-6">Question Review</h3>
+                 <div className="space-y-6">
+                    {report.questions.map((q, index) => {
+                        const answer = report.answers[index];
+                        const isCorrect = answer?.isCorrect;
+                        const isMCQ = q.questionType === 'MCQ';
+
+                        let statusColor = 'border-slate-300 dark:border-slate-700';
+                        if (isMCQ) {
+                            statusColor = isCorrect ? 'border-emerald-500' : 'border-red-500';
+                        }
+                        
+                        return (
+                            <div key={index} className={`bg-white dark:bg-slate-800 p-6 rounded-2xl shadow-lg border-l-4 ${statusColor}`}>
+                                <p className="font-semibold text-slate-800 dark:text-slate-100 mb-2">Q{index + 1}: {q.questionText}</p>
+                                {isMCQ && q.options?.map((opt, optIndex) => {
+                                    const isSelected = answer.selectedOptionIndex === optIndex;
+                                    const isCorrectOption = q.correctOptionIndex === optIndex;
+                                    
+                                    let optionStyle = 'text-slate-600 dark:text-slate-300';
+                                    if (isCorrectOption) optionStyle = 'text-emerald-600 dark:text-emerald-400 font-semibold';
+                                    if (isSelected && !isCorrectOption) optionStyle = 'text-red-600 dark:text-red-400 line-through';
+                                    
+                                    return <p key={optIndex} className={`pl-4 ${optionStyle}`}>
+                                        {isSelected && '➔ '} {opt} {isCorrectOption && ' (Correct)'}
+                                    </p>;
+                                })}
+                                 {!isMCQ && (
+                                     <>
+                                        <p className="text-sm font-semibold text-slate-500 dark:text-slate-400 mt-4 mb-1">Your Answer:</p>
+                                        <p className="p-3 bg-slate-100 dark:bg-slate-700/50 rounded-md text-slate-700 dark:text-slate-200">{answer.writtenAnswer || 'No answer provided.'}</p>
+                                         <p className="text-sm font-semibold text-slate-500 dark:text-slate-400 mt-4 mb-1">Model Answer:</p>
+                                        <p className="p-3 bg-emerald-50 dark:bg-emerald-500/10 rounded-md text-emerald-800 dark:text-emerald-300">{q.modelAnswer}</p>
+                                     </>
+                                 )}
                             </div>
                         )
                     })}
-                </div>
-            </div>
-
-            <div className="flex flex-col sm:flex-row gap-4">
-                <button 
-                    onClick={saveReport} 
-                    disabled={isAlreadySaved}
-                    className="w-full sm:w-auto bg-emerald-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-emerald-700 disabled:bg-emerald-300 disabled:cursor-not-allowed"
-                >
-                    {isAlreadySaved ? 'Report Saved' : 'Save Report'}
-                </button>
-                <button onClick={() => setCurrentView('createTest')} className="w-full sm:w-auto bg-slate-200 text-slate-700 font-bold py-2 px-4 rounded-lg hover:bg-slate-300 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600">Take Another Test</button>
+                 </div>
             </div>
         </div>
     );
 };
 
-interface ReportsListViewProps {
-    reports: Report[];
-    setViewingReport: (report: Report) => void;
-    setCurrentView: (view: AppView) => void;
-    deleteReport: (reportId: string) => void;
-}
-const ReportsListView: React.FC<ReportsListViewProps> = ({ reports, setViewingReport, setCurrentView, deleteReport }) => {
-    const sortedReports = [...reports].sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+const AiTutorView: React.FC<{ userProfile: UserProfile }> = ({ userProfile }) => {
+    const [messages, setMessages] = useState<ChatMessage[]>([]);
+    const [input, setInput] = useState('');
+    const [isLoading, setIsLoading] = useState(false);
+    const [error, setError] = useState('');
+    const [useWebSearch, setUseWebSearch] = useState(false);
+    const [isConfirmingReset, setIsConfirmingReset] = useState(false);
+    
+    const chatRef = useRef<Chat | null>(null);
+    const messagesEndRef = useRef<HTMLDivElement>(null);
+    
+    useEffect(() => {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }, [messages]);
+
+    const handleSendMessage = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!input.trim() || isLoading) return;
+        
+        const userMessage: ChatMessage = { role: 'user', text: input };
+        setMessages(prev => [...prev, userMessage]);
+        setInput('');
+        setIsLoading(true);
+        setError('');
+
+        try {
+            if (!chatRef.current) {
+                chatRef.current = GeminiService.createTutorChat(userProfile, useWebSearch);
+            }
+            
+            const stream = await chatRef.current.sendMessageStream({ message: input });
+
+            let modelResponse: ChatMessage = { role: 'model', text: '', sources: [] };
+            setMessages(prev => [...prev, modelResponse]);
+
+            for await (const chunk of stream) {
+                modelResponse.text += chunk.text;
+                if (chunk.candidates?.[0]?.groundingMetadata?.groundingChunks) {
+                    const sources = chunk.candidates[0].groundingMetadata.groundingChunks
+                        .map((c: any) => c.web)
+                        .filter(Boolean); // Filter out any non-web chunks
+                     modelResponse.sources = [...(modelResponse.sources || []), ...sources];
+                }
+
+                setMessages(prev => {
+                    const newMessages = [...prev];
+                    newMessages[newMessages.length - 1] = { ...modelResponse };
+                    return newMessages;
+                });
+            }
+
+        } catch (err) {
+            setError("Sorry, I couldn't get a response. Please try again.");
+            setMessages(prev => prev.slice(0, -1)); // Remove the empty model message
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    const handleResetChat = () => {
+        chatRef.current = null;
+        setMessages([]);
+    };
+
+    const handleConfirmReset = () => {
+        handleResetChat();
+        setIsConfirmingReset(false);
+    };
 
     return (
-        <div className="p-4 md:p-8">
-            <h2 className="text-3xl font-bold text-slate-800 dark:text-slate-100 mb-6">My Reports</h2>
-            {sortedReports.length === 0 ? (
-                <div className="text-center py-12 bg-white dark:bg-slate-800 rounded-xl shadow-md">
-                    <Icons.FileTextIcon className="w-16 h-16 mx-auto text-slate-300 dark:text-slate-600"/>
-                    <h3 className="mt-2 text-xl font-semibold text-slate-800 dark:text-slate-100">No Reports Yet</h3>
-                    <p className="mt-1 text-slate-500 dark:text-slate-400">Take a test to see your first report here.</p>
+        <div className="h-[calc(100vh-10rem)] max-w-4xl mx-auto flex flex-col bg-white dark:bg-slate-800 rounded-2xl shadow-lg animate-fade-in-up">
+            <ConfirmationModal
+                isOpen={isConfirmingReset}
+                title="Reset Chat History"
+                message="Are you sure you want to permanently delete the current conversation? This action cannot be undone."
+                onConfirm={handleConfirmReset}
+                onCancel={() => setIsConfirmingReset(false)}
+                confirmText="Reset Chat"
+                confirmButtonClass="bg-red-600 hover:bg-red-700"
+            />
+            <div className="p-4 border-b dark:border-slate-700 flex justify-between items-center flex-wrap gap-2">
+                <h2 className="text-xl font-bold text-slate-800 dark:text-slate-100">AI Tutor - Nova</h2>
+                <div className="flex items-center gap-4">
+                     <label className="flex items-center cursor-pointer">
+                        <Icons.GlobeIcon className={`w-5 h-5 mr-2 ${useWebSearch ? 'text-indigo-600' : 'text-slate-400'}`} />
+                        <span className="text-sm font-medium text-slate-600 dark:text-slate-300 mr-2">Search the web</span>
+                        <div className="relative">
+                            <input type="checkbox" checked={useWebSearch} onChange={(e) => {
+                                setUseWebSearch(e.target.checked);
+                                handleResetChat(); // Reset chat when toggling search
+                            }} className="sr-only" />
+                            <div className={`block w-12 h-6 rounded-full ${useWebSearch ? 'bg-indigo-600' : 'bg-slate-300 dark:bg-slate-600'}`}></div>
+                            <div className={`dot absolute left-1 top-1 bg-white w-4 h-4 rounded-full transition-transform ${useWebSearch ? 'translate-x-6' : ''}`}></div>
+                        </div>
+                    </label>
+                    <button onClick={() => setIsConfirmingReset(true)} className="text-slate-500 hover:text-slate-700 dark:hover:text-slate-200" title="Reset Chat">
+                        <Icons.TrashIcon className="w-5 h-5"/>
+                    </button>
+                </div>
+            </div>
+            <div className="flex-1 overflow-y-auto p-6 space-y-4">
+                 {messages.length === 0 && (
+                    <div className="text-center text-slate-500 dark:text-slate-400 h-full flex flex-col justify-center">
+                        <p>Ask me anything about your subjects!</p>
+                        <p className="text-sm">For example: "Explain Newton's third law of motion."</p>
+                    </div>
+                 )}
+                {messages.map((msg, index) => (
+                    <div key={index} className={`flex gap-3 ${msg.role === 'user' ? 'justify-end' : ''}`}>
+                        {msg.role === 'model' && <div className="w-8 h-8 rounded-full bg-indigo-500 flex-shrink-0 self-end"></div>}
+                        <div className={`p-4 rounded-2xl max-w-lg ${msg.role === 'user' ? 'bg-indigo-600 text-white rounded-br-none' : 'bg-slate-100 dark:bg-slate-700 text-slate-800 dark:text-slate-100 rounded-bl-none'}`}>
+                            <div className="prose prose-sm dark:prose-invert max-w-none whitespace-pre-wrap">{msg.text}</div>
+                            {msg.sources && msg.sources.length > 0 && (
+                                <div className="mt-3 border-t dark:border-slate-600 pt-2">
+                                    <p className="text-xs font-semibold mb-1">Sources:</p>
+                                    <ul className="text-xs space-y-1">
+                                        {[...new Map(msg.sources.map(item => [item["uri"], item])).values()].map((source, i) => (
+                                            <li key={i}>
+                                                <a href={source.uri} target="_blank" rel="noopener noreferrer" className="text-indigo-400 hover:underline truncate block">
+                                                   {i+1}. {source.title}
+                                                </a>
+                                            </li>
+                                        ))}
+                                    </ul>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                ))}
+                 {isLoading && messages[messages.length-1]?.role !== 'model' && (
+                     <div className="flex gap-3">
+                         <div className="w-8 h-8 rounded-full bg-indigo-500 flex-shrink-0"></div>
+                         <div className="p-4 rounded-2xl bg-slate-100 dark:bg-slate-700 rounded-bl-none">
+                            <div className="flex items-center gap-2">
+                                <span className="w-2 h-2 bg-slate-400 rounded-full animate-bounce delay-75"></span>
+                                <span className="w-2 h-2 bg-slate-400 rounded-full animate-bounce delay-200"></span>
+                                <span className="w-2 h-2 bg-slate-400 rounded-full animate-bounce delay-300"></span>
+                            </div>
+                         </div>
+                    </div>
+                 )}
+                <div ref={messagesEndRef} />
+            </div>
+            {error && <p className="text-red-500 text-sm px-6 pb-2">{error}</p>}
+            <form onSubmit={handleSendMessage} className="p-4 border-t dark:border-slate-700">
+                <div className="relative">
+                     <input type="text" value={input} onChange={e => setInput(e.target.value)} placeholder="Ask Nova a question..." className="w-full px-4 py-3 pr-12 border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-700/50 rounded-xl focus:ring-2 focus:ring-indigo-500" />
+                     <button type="submit" disabled={isLoading || !input.trim()} className="absolute right-2 top-1/2 -translate-y-1/2 p-2 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 disabled:bg-indigo-300 dark:disabled:bg-indigo-800 transition">
+                         <Icons.ArrowRightIcon className="w-5 h-5" />
+                     </button>
+                </div>
+            </form>
+        </div>
+    );
+};
+
+const StudyNotesView: React.FC<{ userProfile: UserProfile }> = ({ userProfile }) => {
+    const [topic, setTopic] = useState('');
+    const [notes, setNotes] = useState('');
+    const [isLoading, setIsLoading] = useState(false);
+    const [error, setError] = useState('');
+
+    const handleGenerate = async () => {
+        if (!topic.trim()) {
+            setError("Please enter a topic.");
+            return;
+        }
+        setIsLoading(true);
+        setError('');
+        setNotes('');
+        try {
+            const result = await GeminiService.generateStudyNotes(topic, userProfile.grade, userProfile.board);
+            setNotes(result);
+        } catch (err: any) {
+            setError(err.message || "Failed to generate notes.");
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    return (
+        <div className="max-w-4xl mx-auto space-y-6 animate-fade-in-up">
+            <div>
+                <p className="text-slate-500 dark:text-slate-400">Enter a topic and get structured, easy-to-understand notes generated for you.</p>
+            </div>
+            <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl shadow-lg">
+                <div className="flex flex-col sm:flex-row gap-4">
+                    <input
+                        id="topic-notes"
+                        type="text"
+                        value={topic}
+                        onChange={e => setTopic(e.target.value)}
+                        placeholder="e.g., The Indian Rebellion of 1857"
+                        className="flex-1 w-full px-4 py-2.5 border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-700/50 rounded-lg focus:ring-2 focus:ring-indigo-500"
+                    />
+                     <button onClick={handleGenerate} disabled={isLoading} className="w-full sm:w-auto bg-indigo-600 text-white font-bold py-2 px-6 rounded-lg hover:bg-indigo-700 focus:outline-none focus:ring-4 focus:ring-indigo-500/50 transition disabled:opacity-50">
+                        {isLoading ? 'Generating...' : 'Generate Notes'}
+                    </button>
+                </div>
+            </div>
+
+            {error && <ErrorDisplay message={error} />}
+
+            {(notes || isLoading) && (
+                <div className="bg-white dark:bg-slate-800 p-8 rounded-2xl shadow-lg min-h-[20rem]">
+                    {isLoading && <Spinner />}
+                    {notes && <div className="prose dark:prose-invert max-w-none" dangerouslySetInnerHTML={{ __html: notes }} />}
+                </div>
+            )}
+        </div>
+    );
+};
+
+const PoemsAndStoriesView: React.FC<{ userProfile: UserProfile }> = ({ userProfile }) => {
+    const [type, setType] = useState<'poem' | 'story'>('story');
+    const [topic, setTopic] = useState('');
+    const [content, setContent] = useState('');
+    const [isLoading, setIsLoading] = useState(false);
+    const [error, setError] = useState('');
+
+    const handleGenerate = async () => {
+        if (!topic.trim()) {
+            setError("Please enter a topic.");
+            return;
+        }
+        setIsLoading(true);
+        setError('');
+        setContent('');
+        try {
+            const result = await GeminiService.generateFunContent(type, topic, userProfile.grade);
+            setContent(result);
+        } catch (err: any) {
+            setError(err.message);
+        } finally {
+            setIsLoading(false);
+        }
+    };
+    
+    return (
+        <div className="max-w-4xl mx-auto space-y-6 animate-fade-in-up">
+            <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl shadow-lg">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <input id="topic" type="text" value={topic} onChange={e => setTopic(e.target.value)} placeholder="e.g., A talking squirrel" className="md:col-span-2 w-full px-4 py-2.5 border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-700/50 rounded-lg focus:ring-2 focus:ring-indigo-500" />
+                     <div className="flex rounded-lg bg-slate-200 dark:bg-slate-700 p-1">
+                        <button onClick={() => setType('story')} className={`px-4 py-1.5 text-sm font-semibold rounded-md flex-1 transition ${type === 'story' ? 'bg-white dark:bg-slate-600 text-indigo-700 dark:text-white shadow' : 'text-slate-600 dark:text-slate-300'}`}>Story</button>
+                        <button onClick={() => setType('poem')} className={`px-4 py-1.5 text-sm font-semibold rounded-md flex-1 transition ${type === 'poem' ? 'bg-white dark:bg-slate-600 text-indigo-700 dark:text-white shadow' : 'text-slate-600 dark:text-slate-300'}`}>Poem</button>
+                     </div>
+                </div>
+                <button onClick={handleGenerate} disabled={isLoading} className="mt-4 w-full bg-indigo-600 text-white font-bold py-2 px-6 rounded-lg hover:bg-indigo-700 focus:outline-none focus:ring-4 focus:ring-indigo-500/50 transition disabled:opacity-50">
+                    {isLoading ? 'Generating...' : 'Generate'}
+                </button>
+            </div>
+            
+            {error && <ErrorDisplay message={error} />}
+
+            <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl shadow-lg min-h-[20rem]">
+                {isLoading && <Spinner />}
+                {content && <div className="prose dark:prose-invert max-w-none whitespace-pre-wrap">{content}</div>}
+            </div>
+        </div>
+    );
+};
+
+const SettingsView: React.FC<{
+    userProfile: UserProfile;
+    onUpdateProfile: (updatedProfile: UserProfile) => void;
+}> = ({ userProfile, onUpdateProfile }) => {
+    const [profile, setProfile] = useState(userProfile);
+    const [isSaved, setIsSaved] = useState(false);
+
+    const handleSave = () => {
+        onUpdateProfile(profile);
+        setIsSaved(true);
+        setTimeout(() => setIsSaved(false), 2000);
+    };
+
+    const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
+        const { name, value } = e.target;
+        setProfile(prev => ({ ...prev, [name]: name === 'grade' ? parseInt(value) : value }));
+    }
+
+    return (
+        <div className="max-w-2xl mx-auto space-y-8 animate-fade-in-up">
+            <div className="bg-white dark:bg-slate-800 p-8 rounded-2xl shadow-lg space-y-6">
+                <h3 className="text-xl font-bold text-slate-800 dark:text-slate-100 border-b dark:border-slate-700 pb-3">Profile Information</h3>
+                <div>
+                    <label htmlFor="name" className="text-sm font-medium text-slate-700 dark:text-slate-300 block mb-2">Name</label>
+                    <input id="name" name="name" type="text" value={profile.name} onChange={handleChange} className="w-full px-4 py-2.5 border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-700/50 rounded-lg focus:ring-2 focus:ring-indigo-500" />
+                </div>
+                 <div className="grid grid-cols-2 gap-6">
+                    <div>
+                        <label htmlFor="grade" className="text-sm font-medium text-slate-700 dark:text-slate-300 block mb-2">Grade</label>
+                        <input id="grade" name="grade" type="number" value={profile.grade} onChange={handleChange} className="w-full px-4 py-2.5 border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-700/50 rounded-lg focus:ring-2 focus:ring-indigo-500" />
+                    </div>
+                     <div>
+                        <label htmlFor="board" className="text-sm font-medium text-slate-700 dark:text-slate-300 block mb-2">Board</label>
+                        <select id="board" name="board" value={profile.board} onChange={handleChange} className="w-full px-4 py-2.5 border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-700/50 rounded-lg focus:ring-2 focus:ring-indigo-500">
+                            {INDIA_BOARDS.map(b => <option key={b} value={b}>{b}</option>)}
+                        </select>
+                    </div>
+                 </div>
+                
+                 <h3 className="text-xl font-bold text-slate-800 dark:text-slate-100 border-b dark:border-slate-700 pb-3 pt-4">Feedback Preferences</h3>
+                 <div>
+                    <label className="text-sm font-medium text-slate-700 dark:text-slate-300 block mb-2">Test Result Feedback</label>
+                    <div className="flex rounded-lg bg-slate-200 dark:bg-slate-700 p-1">
+                        <button onClick={() => setProfile(p => ({...p, feedbackPreference: 'summary'}))} className={`px-4 py-1.5 text-sm font-semibold rounded-md flex-1 transition ${profile.feedbackPreference !== 'full' ? 'bg-white dark:bg-slate-600 text-indigo-700 dark:text-white shadow' : 'text-slate-600 dark:text-slate-300'}`}>Summary</button>
+                        <button onClick={() => setProfile(p => ({...p, feedbackPreference: 'full'}))} className={`px-4 py-1.5 text-sm font-semibold rounded-md flex-1 transition ${profile.feedbackPreference === 'full' ? 'bg-white dark:bg-slate-600 text-indigo-700 dark:text-white shadow' : 'text-slate-600 dark:text-slate-300'}`}>Full Detailed</button>
+                    </div>
+                 </div>
+                 <div className="flex justify-end items-center gap-4 pt-4">
+                     {isSaved && <p className="text-emerald-600 dark:text-emerald-400 text-sm animate-fade-in">Changes saved!</p>}
+                     <button onClick={handleSave} className="bg-indigo-600 text-white font-bold py-2 px-6 rounded-lg hover:bg-indigo-700 focus:outline-none focus:ring-4 focus:ring-indigo-500/50 transition">Save Changes</button>
+                 </div>
+            </div>
+            
+            <div className="bg-white dark:bg-slate-800 p-8 rounded-2xl shadow-lg">
+                 <h3 className="text-xl font-bold text-slate-800 dark:text-slate-100 mb-4">Your Badges</h3>
+                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                     {BADGES.map(badge => {
+                         const hasBadge = userProfile.badges.includes(badge.id);
+                         return (
+                            <div key={badge.id} className={`p-4 rounded-lg text-center transition-all ${hasBadge ? 'bg-amber-100 dark:bg-amber-500/20' : 'bg-slate-100 dark:bg-slate-700 opacity-60'}`}>
+                                <span className="text-4xl">{badge.icon}</span>
+                                <p className={`mt-2 font-semibold text-sm ${hasBadge ? 'text-amber-800 dark:text-amber-200' : 'text-slate-600 dark:text-slate-300'}`}>{badge.name}</p>
+                            </div>
+                         )
+                     })}
+                 </div>
+            </div>
+        </div>
+    );
+};
+
+const GoalsView: React.FC<{
+    goals: Goal[];
+    setGoals: React.Dispatch<React.SetStateAction<Goal[]>>;
+}> = ({ goals, setGoals }) => {
+    const [isCreating, setCreating] = useState(false);
+    const [newGoal, setNewGoal] = useState<Partial<Goal>>({ type: 'completion', subject: 'Any', timeframe: 'week'});
+
+    const handleCreateGoal = () => {
+        if (!newGoal.description || !newGoal.targetValue) return;
+        const goal: Goal = {
+            id: `goal_${Date.now()}`,
+            description: newGoal.description,
+            type: newGoal.type!,
+            subject: newGoal.subject!,
+            targetValue: newGoal.targetValue!,
+            currentValue: 0,
+            timeframe: newGoal.timeframe!,
+            startDate: new Date().toISOString(),
+            status: 'active'
+        };
+        setGoals(prev => [goal, ...prev]);
+        setCreating(false);
+        setNewGoal({ type: 'completion', subject: 'Any', timeframe: 'week'});
+    };
+
+    const handleDeleteGoal = (id: string) => {
+        setGoals(prev => prev.filter(g => g.id !== id));
+    };
+
+    const activeGoals = goals.filter(g => g.status === 'active');
+    const completedGoals = goals.filter(g => g.status === 'completed');
+
+    const GoalCard: React.FC<{ goal: Goal; onDelete: (id: string) => void }> = ({ goal, onDelete }) => (
+         <div className="bg-white dark:bg-slate-800 p-5 rounded-2xl shadow-lg">
+            <div className="flex justify-between items-start">
+                 <p className="font-bold text-slate-800 dark:text-slate-100 pr-4">{goal.description}</p>
+                 <button onClick={() => onDelete(goal.id)} className="text-slate-400 hover:text-red-500 transition"><Icons.TrashIcon className="w-4 h-4" /></button>
+            </div>
+            <div className="w-full bg-slate-200 dark:bg-slate-700 rounded-full h-2.5 my-2">
+                <div className={`${goal.status === 'completed' ? 'bg-emerald-500' : 'bg-indigo-600'} h-2.5 rounded-full`} style={{ width: `${Math.min(100, (goal.currentValue / goal.targetValue) * 100)}%` }}></div>
+            </div>
+            <p className="text-sm text-slate-500 dark:text-slate-400">{GoalService.getMotivationalMessage(goal)}</p>
+         </div>
+    );
+    
+    return (
+        <div className="max-w-4xl mx-auto space-y-8 animate-fade-in-up">
+            <div className="flex justify-end items-center">
+                <button onClick={() => setCreating(!isCreating)} className="bg-indigo-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-indigo-700 transition">
+                    {isCreating ? 'Cancel' : 'New Goal'}
+                </button>
+            </div>
+
+            {isCreating && (
+                <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl shadow-lg space-y-4 animate-scale-in">
+                    <h3 className="text-xl font-bold text-slate-800 dark:text-slate-100">Create New Goal</h3>
+                    <textarea value={newGoal.description || ''} onChange={e => setNewGoal(p => ({...p, description: e.target.value}))} placeholder="e.g., Score above 80% in 3 Math tests" className="w-full p-2.5 border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-700/50 rounded-lg" rows={2}/>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                        {/* More fields could be added here for subject, target, timeframe etc. */}
+                        <input type="number" value={newGoal.targetValue || ''} onChange={e => setNewGoal(p => ({...p, targetValue: parseInt(e.target.value)}))} placeholder="Target" className="p-2.5 border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-700/50 rounded-lg"/>
+                    </div>
+                    <div className="flex justify-end gap-4">
+                        <button onClick={handleCreateGoal} className="bg-indigo-600 text-white font-semibold px-4 py-2 rounded-lg">Add Goal</button>
+                    </div>
+                </div>
+            )}
+            
+            <div>
+                 <h3 className="text-xl font-semibold text-slate-700 dark:text-slate-200 mb-4">Active</h3>
+                 <div className="space-y-4">
+                    {activeGoals.length > 0 ? activeGoals.map(g => <GoalCard key={g.id} goal={g} onDelete={handleDeleteGoal} />) : <p className="text-slate-500 dark:text-slate-400">No active goals.</p>}
+                 </div>
+            </div>
+            <div>
+                 <h3 className="text-xl font-semibold text-slate-700 dark:text-slate-200 mb-4">Completed</h3>
+                 <div className="space-y-4">
+                     {completedGoals.length > 0 ? completedGoals.map(g => <GoalCard key={g.id} goal={g} onDelete={handleDeleteGoal} />) : <p className="text-slate-500 dark:text-slate-400">No completed goals yet.</p>}
+                 </div>
+            </div>
+        </div>
+    );
+};
+
+// FIX: Correctly implemented the StudyPlannerView component to manage its own state and logic.
+const StudyPlannerView: React.FC<{
+    reports: Report[];
+    goals: Goal[];
+    userProfile: UserProfile;
+}> = ({ reports, goals, userProfile }) => {
+    const [plan, setPlan] = useState<any>(null);
+    const [isLoading, setIsLoading] = useState(false);
+    const [error, setError] = useState('');
+
+    const generatePlan = useCallback(async () => {
+        setIsLoading(true);
+        setError('');
+        try {
+            const weakAreas = [...new Set(reports.flatMap(r => r.weakAreas))];
+            const activeGoals = goals.filter(g => g.status === 'active');
+            const generatedPlan = await GeminiService.generateStudyPlan(weakAreas, activeGoals, userProfile);
+            setPlan(generatedPlan.weeklyPlan);
+        } catch (err: any) {
+            setError(err.message || "Failed to generate a plan.");
+        } finally {
+            setIsLoading(false);
+        }
+    }, [reports, goals, userProfile]);
+
+    useEffect(() => {
+        generatePlan();
+    }, [generatePlan]);
+    
+    const handleTaskToggle = (dayIndex: number, taskIndex: number) => {
+        setPlan((prevPlan: any) => {
+            const newPlan = [...prevPlan];
+            newPlan[dayIndex].tasks[taskIndex].completed = !newPlan[dayIndex].tasks[taskIndex].completed;
+            return newPlan;
+        });
+    };
+
+    if (isLoading) return <Spinner />;
+    if (error) return <ErrorDisplay message={error} />;
+
+    return (
+        <div className="max-w-7xl mx-auto animate-fade-in-up">
+            <div className="flex justify-end items-center mb-6">
+                <button onClick={generatePlan} className="bg-indigo-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-indigo-700 transition flex items-center gap-2">
+                    <Icons.CogIcon className="w-5 h-5"/> Regenerate Plan
+                </button>
+            </div>
+            {!plan ? (
+                <div className="bg-white dark:bg-slate-800 p-8 rounded-2xl shadow-lg text-center">
+                    <p>Generating your personalized plan...</p>
                 </div>
             ) : (
-                <div className="space-y-6">
-                    <ScoreTrendChart reports={sortedReports} />
-                    {sortedReports.map(report => (
-                         <div key={report.id} className="bg-white dark:bg-slate-800 p-4 rounded-xl shadow-md hover:shadow-lg transition-shadow">
-                            <div className="grid grid-cols-3 sm:grid-cols-4 gap-4 items-center">
-                                <div 
-                                    onClick={() => { setViewingReport(report); setCurrentView('reportDetail'); }} 
-                                    className="col-span-2 sm:col-span-3 cursor-pointer group"
-                                    aria-label={`View report for ${report.subject} - ${report.chapter}`}
-                                >
-                                    <h3 className="font-semibold text-indigo-700 dark:text-indigo-400 group-hover:underline">{report.subject} - {report.chapter}</h3>
-                                    <p className="text-sm text-slate-500 dark:text-slate-400">{new Date(report.date).toLocaleDateString()}</p>
-                                </div>
-                                <div className="flex items-center justify-end space-x-2">
-                                     <div className="text-right">
-                                        <p className="font-bold text-xl text-slate-800 dark:text-slate-100">{report.score.toFixed(0)}%</p>
-                                        <p className="text-xs text-slate-500 dark:text-slate-400">{report.marksScored}/{report.totalMarks}</p>
-                                    </div>
-                                    <button 
-                                        onClick={(e) => { e.stopPropagation(); deleteReport(report.id); }}
-                                        className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-500/10 rounded-full transition-colors flex-shrink-0"
-                                        aria-label="Delete report"
-                                    >
-                                        <Icons.TrashIcon className="w-5 h-5" />
-                                    </button>
-                                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-7 gap-4">
+                    {plan.map((day: any, dayIndex: number) => (
+                        <div key={day.day} className="bg-white dark:bg-slate-800 p-4 rounded-2xl shadow-lg">
+                            <h3 className="font-bold text-lg text-indigo-700 dark:text-indigo-400">{day.day}</h3>
+                            <p className="text-sm text-slate-500 dark:text-slate-400 mb-3 border-b dark:border-slate-700 pb-2">{day.focus}</p>
+                            <div className="space-y-2">
+                                {day.tasks.map((task: any, taskIndex: number) => (
+                                    <label key={taskIndex} className="flex items-start p-2 rounded-md hover:bg-slate-50 dark:hover:bg-slate-700/50 cursor-pointer">
+                                        <input type="checkbox" checked={task.completed} onChange={() => handleTaskToggle(dayIndex, taskIndex)} className="mt-1 w-4 h-4 text-indigo-600 rounded focus:ring-indigo-500 border-slate-300 dark:border-slate-600 dark:bg-slate-700" />
+                                        <span className={`ml-2 text-sm text-slate-700 dark:text-slate-200 ${task.completed ? 'line-through text-slate-400 dark:text-slate-500' : ''}`}>{task.description}</span>
+                                    </label>
+                                ))}
                             </div>
                         </div>
                     ))}
                 </div>
             )}
         </div>
-    );
-};
-
-interface ReportDetailViewProps {
-    viewingReport: Report;
-    setCurrentView: (view: AppView) => void;
-}
-const ReportDetailView: React.FC<ReportDetailViewProps> = ({ viewingReport, setCurrentView }) => {
-    if (!viewingReport) return <p>Report not found.</p>;
-    
-    return (
-         <div className="p-4 md:p-8">
-            <button onClick={() => setCurrentView('reports')} className="flex items-center text-sm text-slate-500 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 mb-4 font-semibold">
-                <Icons.ChevronLeftIcon className="w-4 h-4 mr-1" /> Back to Reports
-            </button>
-            <h2 className="text-3xl font-bold text-slate-800 dark:text-slate-100 mb-2">Report Details</h2>
-            <p className="text-slate-500 dark:text-slate-400 mb-6">{viewingReport.subject}: {viewingReport.chapter}</p>
-            
-            <ReportCard report={viewingReport} />
-            
-            {viewingReport.feedbackPreference === 'full' && (
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
-                    <AnswerBreakdownPieChart report={viewingReport} />
-                    <TopicPerformanceChart report={viewingReport} />
-                </div>
-            )}
-
-            <div>
-                <h3 className="text-xl font-semibold mb-4 text-slate-800 dark:text-slate-100">Review Your Answers</h3>
-                <div className="space-y-4">
-                    {viewingReport.questions.map((q, i) => {
-                        const ans = viewingReport.answers[i];
-                        if (!ans) return null;
-                         const isMcq = q.questionType === 'MCQ';
-                        return (
-                            <div key={i} className="bg-white dark:bg-slate-800 p-4 rounded-lg shadow-sm border-l-4"
-                                style={{borderColor: ans.isCorrect === true ? '#10B981' : ans.isCorrect === false ? '#EF4444' : '#64748B'}}>
-                                <div className="mb-3">
-                                    <div className="flex justify-between items-start">
-                                        <p className="font-semibold text-slate-800 dark:text-slate-100 whitespace-pre-wrap flex-1">{i + 1}. {q.questionText}</p>
-                                        <span className="text-xs font-bold bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 px-2 py-1 rounded-full ml-4 flex-shrink-0">{q.marks} marks</span>
-                                    </div>
-                                </div>
-                                
-                                {isMcq ? (
-                                    <div className="mt-2 pt-2 border-t dark:border-slate-700">
-                                        <p className={`text-sm mt-2 ${ans.isCorrect ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
-                                            Your answer: {q.options?.[ans.selectedOptionIndex ?? -1] ?? 'Not answered'} {ans.isCorrect ? <Icons.CheckCircleIcon className="inline w-4 h-4 ml-1" /> : <Icons.XCircleIcon className="inline w-4 h-4 ml-1" />}
-                                        </p>
-                                        {!ans.isCorrect && (
-                                            <div className="mt-3 pt-3 border-t dark:border-slate-700">
-                                                <p className="text-sm text-emerald-700 dark:text-emerald-500 font-medium">Correct answer: {q.options?.[q.correctOptionIndex!]}</p>
-                                                {viewingReport.feedbackPreference === 'full' && ans.solution && (
-                                                    <p className="text-sm text-slate-600 dark:text-slate-300 mt-2 whitespace-pre-wrap">{ans.solution}</p>
-                                                )}
-                                            </div>
-                                        )}
-                                    </div>
-                                ) : (
-                                    <div className="mt-3 pt-3 border-t dark:border-slate-700 grid grid-cols-1 md:grid-cols-2 gap-4">
-                                        <div>
-                                            <h4 className="text-sm font-bold text-slate-700 dark:text-slate-200 mb-1">Your Answer</h4>
-                                            <p className="text-sm text-slate-600 dark:text-slate-300 bg-slate-50 dark:bg-slate-700/50 p-2 rounded whitespace-pre-wrap">{ans.writtenAnswer || "No answer provided."}</p>
-                                        </div>
-                                        <div>
-                                            <h4 className="text-sm font-bold text-emerald-700 dark:text-emerald-500 mb-1">Model Answer</h4>
-                                            <p className="text-sm text-slate-600 dark:text-slate-300 bg-emerald-50 dark:bg-emerald-900/50 p-2 rounded whitespace-pre-wrap">{q.modelAnswer}</p>
-                                        </div>
-                                    </div>
-                                )}
-                            </div>
-                        )
-                    })}
-                </div>
-            </div>
-        </div>
-    );
-};
-
-interface AiTutorViewProps {
-    chatHistory: ChatMessage[];
-    tutorInput: string;
-    setTutorInput: (input: string) => void;
-    isLoading: boolean;
-    handleTutorSubmit: (e: React.FormEvent) => void;
-}
-const AiTutorView: React.FC<AiTutorViewProps> = ({ chatHistory, tutorInput, setTutorInput, isLoading, handleTutorSubmit }) => (
-    <div className="p-4 md:p-8 h-full flex flex-col">
-        <h2 className="text-3xl font-bold text-slate-800 dark:text-slate-100 mb-4">AI Tutor - Nova</h2>
-        <div className="flex-grow bg-white dark:bg-slate-800/50 rounded-lg shadow-inner p-4 overflow-y-auto mb-4 space-y-4">
-            {chatHistory.length === 0 && <div className="text-center text-slate-500 dark:text-slate-400 py-8">Ask Nova anything about your subjects!</div>}
-            {chatHistory.map((msg, index) => {
-                // Simple parser for **bold** text
-                const parts = msg.text.split(/(\*\*.*?\*\*)/g).filter(Boolean);
-                return (
-                    <div key={index} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                        <div className={`max-w-md sm:max-w-xl p-3 rounded-2xl ${msg.role === 'user' ? 'bg-indigo-500 text-white' : 'bg-slate-200 text-slate-800 dark:bg-slate-700 dark:text-slate-100'}`}>
-                            <p className="whitespace-pre-wrap">
-                                {parts.map((part, i) =>
-                                    part.startsWith('**') && part.endsWith('**') ?
-                                    <strong key={i}>{part.slice(2, -2)}</strong> :
-                                    part
-                                )}
-                            </p>
-                        </div>
-                    </div>
-                );
-            })}
-            {isLoading && <div className="flex justify-start"><div className="bg-slate-200 dark:bg-slate-700 text-slate-800 dark:text-slate-100 p-3 rounded-2xl animate-pulse">Nova is typing...</div></div>}
-        </div>
-        <form onSubmit={handleTutorSubmit} className="flex space-x-2">
-            <input
-                type="text"
-                value={tutorInput}
-                onChange={(e) => setTutorInput(e.target.value)}
-                placeholder="Ask me anything..."
-                className="flex-grow px-4 py-2 border border-slate-300 dark:border-slate-600 dark:bg-slate-700/50 dark:text-slate-100 rounded-lg focus:ring-2 focus:ring-indigo-500"
-                disabled={isLoading}
-            />
-            <button type="submit" className="bg-indigo-600 text-white font-semibold px-6 py-2 rounded-lg hover:bg-indigo-700 disabled:bg-indigo-300" disabled={isLoading}>Send</button>
-        </form>
-    </div>
-);
-
-interface FunLearningViewProps {
-    isLoading: boolean;
-    funContent: string | null;
-    funContentError: string | null;
-    handleGenerateFunContent: (type: 'poem' | 'story', topic: string) => void;
-    handleGenerateRandomQuiz: () => void;
-    studyNotes: string | null;
-    studyNotesError: string | null;
-    handleGenerateStudyNotes: (topic: string) => void;
-}
-const FunLearningView: React.FC<FunLearningViewProps> = ({ 
-    isLoading, 
-    funContent, 
-    funContentError, 
-    handleGenerateFunContent, 
-    handleGenerateRandomQuiz,
-    studyNotes,
-    studyNotesError,
-    handleGenerateStudyNotes
-}) => {
-    const [creativeTopic, setCreativeTopic] = useState('');
-    const [notesTopic, setNotesTopic] = useState('');
-
-    const handleCreativeSubmit = (type: 'poem' | 'story') => {
-        if (!creativeTopic.trim()) return;
-        handleGenerateFunContent(type, creativeTopic);
-    };
-
-    const handleNotesSubmit = () => {
-        if (!notesTopic.trim()) return;
-        handleGenerateStudyNotes(notesTopic);
-    };
-
-    return (
-        <div className="p-4 md:p-8 max-w-3xl mx-auto">
-            <h2 className="text-3xl font-bold text-slate-800 dark:text-slate-100 mb-6">Fun Learning</h2>
-
-            <div className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-md mb-8">
-                <h3 className="text-xl font-semibold text-slate-800 dark:text-slate-100 mb-2">Study Notes Generator</h3>
-                <p className="text-slate-500 dark:text-slate-400 mb-4">Need help with a topic? Enter it below to get AI-generated study notes tailored to your curriculum.</p>
-                <div className="flex flex-col sm:flex-row gap-2">
-                    <input
-                        type="text"
-                        value={notesTopic}
-                        onChange={(e) => setNotesTopic(e.target.value)}
-                        placeholder="e.g., Photosynthesis"
-                        className="flex-grow px-4 py-2 border border-slate-300 dark:border-slate-600 dark:bg-slate-700/50 dark:text-slate-100 rounded-lg focus:ring-2 focus:ring-indigo-500"
-                        disabled={isLoading}
-                    />
-                    <button onClick={handleNotesSubmit} className="bg-indigo-600 text-white font-semibold px-4 py-2 rounded-lg hover:bg-indigo-700 disabled:bg-indigo-300 w-full sm:w-auto" disabled={isLoading || !notesTopic}>
-                        Generate Notes
-                    </button>
-                </div>
-                 {(studyNotes || studyNotesError) && (
-                    <div className="mt-6 p-4 bg-slate-50 dark:bg-slate-700/50 rounded-lg border dark:border-slate-700">
-                        {studyNotesError ? (
-                            <p className="text-red-600">{studyNotesError}</p>
-                        ) : (
-                            <p className="text-slate-700 dark:text-slate-200 whitespace-pre-wrap">{studyNotes}</p>
-                        )}
-                    </div>
-                )}
-            </div>
-
-            <div className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-md mb-8">
-                <h3 className="text-xl font-semibold text-slate-800 dark:text-slate-100 mb-2">Creative Corner</h3>
-                <p className="text-slate-500 dark:text-slate-400 mb-4">Enter a topic and let our AI write a poem or a story for you!</p>
-                <div className="flex flex-col sm:flex-row gap-2">
-                    <input
-                        type="text"
-                        value={creativeTopic}
-                        onChange={(e) => setCreativeTopic(e.target.value)}
-                        placeholder="e.g., The Solar System"
-                        className="flex-grow px-4 py-2 border border-slate-300 dark:border-slate-600 dark:bg-slate-700/50 dark:text-slate-100 rounded-lg focus:ring-2 focus:ring-indigo-500"
-                        disabled={isLoading}
-                    />
-                    <div className="flex gap-2">
-                        <button onClick={() => handleCreativeSubmit('poem')} className="flex-1 bg-sky-500 text-white font-semibold px-4 py-2 rounded-lg hover:bg-sky-600 disabled:bg-sky-300" disabled={isLoading || !creativeTopic}>Generate Poem</button>
-                        <button onClick={() => handleCreativeSubmit('story')} className="flex-1 bg-emerald-500 text-white font-semibold px-4 py-2 rounded-lg hover:bg-emerald-600 disabled:bg-emerald-300" disabled={isLoading || !creativeTopic}>Generate Story</button>
-                    </div>
-                </div>
-                 {(funContent || funContentError) && (
-                    <div className="mt-6 p-4 bg-slate-50 dark:bg-slate-700/50 rounded-lg border dark:border-slate-700">
-                        {funContentError ? (
-                            <p className="text-red-600">{funContentError}</p>
-                        ) : (
-                            <p className="text-slate-700 dark:text-slate-200 whitespace-pre-wrap">{funContent}</p>
-                        )}
-                    </div>
-                )}
-            </div>
-
-            <div className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-md">
-                <h3 className="text-xl font-semibold text-slate-800 dark:text-slate-100 mb-2">Quick Challenge</h3>
-                <p className="text-slate-500 dark:text-slate-400 mb-4">Test your knowledge with a quick, random quiz on various subjects.</p>
-                <button onClick={handleGenerateRandomQuiz} className="w-full bg-indigo-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-indigo-700 disabled:bg-indigo-300" disabled={isLoading}>
-                    Start Random Quiz
-                </button>
-            </div>
-        </div>
-    );
-};
-
-interface SettingsViewProps {
-    userProfile: UserProfile;
-    updateUserProfile: (profile: UserProfile) => void;
-}
-const SettingsView: React.FC<SettingsViewProps> = ({ userProfile, updateUserProfile }) => {
-    const currentPreference = userProfile.feedbackPreference || 'full';
-
-    const handlePreferenceChange = (preference: FeedbackPreference) => {
-        updateUserProfile({ ...userProfile, feedbackPreference: preference });
-    };
-
-    return (
-        <div className="p-4 md:p-8 max-w-2xl mx-auto">
-            <h2 className="text-3xl font-bold text-slate-800 dark:text-slate-100 mb-6">Settings</h2>
-            <div className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-md space-y-6">
-                <div>
-                    <h3 className="text-xl font-semibold text-slate-800 dark:text-slate-100">Feedback Preferences</h3>
-                    <p className="text-slate-500 dark:text-slate-400 mt-1">Choose the level of detail for your test reports.</p>
-                </div>
-                <fieldset className="space-y-4">
-                    <legend className="sr-only">Feedback preference</legend>
-                    <div 
-                        className={`relative flex items-start p-4 rounded-lg border-2 transition-all duration-200 cursor-pointer ${currentPreference === 'full' ? 'border-indigo-600 bg-indigo-50 dark:bg-indigo-500/10' : 'border-slate-300 dark:border-slate-700 hover:border-slate-400 dark:hover:border-slate-500'}`}
-                        onClick={() => handlePreferenceChange('full')}
-                    >
-                        <div className="flex items-center h-5">
-                            <input
-                                id="feedback-full"
-                                name="feedback-preference"
-                                type="radio"
-                                checked={currentPreference === 'full'}
-                                onChange={() => handlePreferenceChange('full')}
-                                className="focus:ring-indigo-500 h-4 w-4 text-indigo-600 border-gray-300"
-                            />
-                        </div>
-                        <div className="ml-3 text-sm">
-                            <label htmlFor="feedback-full" className="font-medium text-slate-800 dark:text-slate-100 cursor-pointer">Full Feedback</label>
-                            <p className="text-slate-500 dark:text-slate-400 mt-1">Receive detailed explanations for incorrect answers and in-depth performance analysis.</p>
-                        </div>
-                    </div>
-                    <div 
-                         className={`relative flex items-start p-4 rounded-lg border-2 transition-all duration-200 cursor-pointer ${currentPreference === 'summary' ? 'border-indigo-600 bg-indigo-50 dark:bg-indigo-500/10' : 'border-slate-300 dark:border-slate-700 hover:border-slate-400 dark:hover:border-slate-500'}`}
-                        onClick={() => handlePreferenceChange('summary')}
-                    >
-                        <div className="flex items-center h-5">
-                            <input
-                                id="feedback-summary"
-                                name="feedback-preference"
-                                type="radio"
-                                checked={currentPreference === 'summary'}
-                                onChange={() => handlePreferenceChange('summary')}
-                                className="focus:ring-indigo-500 h-4 w-4 text-indigo-600 border-gray-300"
-                            />
-                        </div>
-                        <div className="ml-3 text-sm">
-                            <label htmlFor="feedback-summary" className="font-medium text-slate-800 dark:text-slate-100 cursor-pointer">Summary Only</label>
-                            <p className="text-slate-500 dark:text-slate-400 mt-1">See your score and which answers were correct or incorrect, without detailed explanations or charts.</p>
-                        </div>
-                    </div>
-                </fieldset>
-            </div>
-        </div>
-    );
-};
-
-interface AddGoalModalProps {
-    isOpen: boolean;
-    onClose: () => void;
-    onAddGoal: (goal: Omit<Goal, 'id' | 'currentValue' | 'startDate' | 'status'>) => void;
-    reports: Report[];
-}
-
-const AddGoalModal: React.FC<AddGoalModalProps> = ({ isOpen, onClose, onAddGoal, reports }) => {
-    const [type, setType] = useState<'completion' | 'improvement'>('completion');
-    const [subject, setSubject] = useState('Any');
-    const [targetValue, setTargetValue] = useState<number | ''>(5);
-    const [timeframe, setTimeframe] = useState<'week' | 'month'>('week');
-    const [description, setDescription] = useState('');
-    const [error, setError] = useState('');
-    
-    const subjects = useMemo(() => ['Any', ...[...new Set(reports.map(r => r.subject))]], [reports]);
-
-    useEffect(() => {
-        if (type === 'completion') {
-            setDescription(`Complete ${targetValue} ${subject === 'Any' ? '' : subject} test${targetValue !== 1 ? 's' : ''} this ${timeframe}`);
-        } else {
-            setDescription(`Improve my ${subject === 'Any' ? '' : subject} score by ${targetValue}% this ${timeframe}`);
-        }
-    }, [type, subject, targetValue, timeframe]);
-
-    const handleSubmit = (e: React.FormEvent) => {
-        e.preventDefault();
-        if (!description || !targetValue || targetValue <= 0) {
-            setError('Please fill out all fields with valid values.');
-            return;
-        }
-        setError('');
-        onAddGoal({ description, type, subject, targetValue: Number(targetValue), timeframe });
-        onClose();
-    };
-    
-    if (!isOpen) return null;
-
-    return (
-        <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4" onClick={onClose}>
-            <div className="bg-white dark:bg-slate-800 rounded-xl shadow-lg w-full max-w-md p-6 transform transition-all animate-scale-in" onClick={e => e.stopPropagation()}>
-                <h2 className="text-xl font-bold text-slate-800 dark:text-slate-100">Set a New Goal</h2>
-                {error && <p className="text-red-500 bg-red-100 p-2 rounded mt-2">{error}</p>}
-                <form onSubmit={handleSubmit} className="mt-4 space-y-4">
-                    <div>
-                        <label className="text-sm font-medium text-slate-700 dark:text-slate-300 block mb-2">Goal Type</label>
-                        <select value={type} onChange={e => setType(e.target.value as any)} className="w-full px-4 py-2 border border-slate-300 dark:border-slate-600 dark:bg-slate-700 rounded-lg bg-white text-slate-900 dark:text-slate-100">
-                            <option value="completion">Complete Tests</option>
-                            <option value="improvement">Improve Score</option>
-                        </select>
-                    </div>
-                    <div className="grid grid-cols-2 gap-4">
-                        <div>
-                             <label className="text-sm font-medium text-slate-700 dark:text-slate-300 block mb-2">Subject</label>
-                            <select value={subject} onChange={e => setSubject(e.target.value)} className="w-full px-4 py-2 border border-slate-300 dark:border-slate-600 dark:bg-slate-700 rounded-lg bg-white text-slate-900 dark:text-slate-100">
-                                {subjects.map(s => <option key={s} value={s}>{s}</option>)}
-                            </select>
-                        </div>
-                        <div>
-                            <label className="text-sm font-medium text-slate-700 dark:text-slate-300 block mb-2">{type === 'completion' ? '# of Tests' : 'Improve by %'}</label>
-                            <input type="number" value={targetValue} onChange={e => setTargetValue(e.target.value === '' ? '' : parseInt(e.target.value))} min="1" className="w-full px-4 py-2 border border-slate-300 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100 rounded-lg" />
-                        </div>
-                    </div>
-                     <div>
-                        <label className="text-sm font-medium text-slate-700 dark:text-slate-300 block mb-2">Timeframe</label>
-                        <select value={timeframe} onChange={e => setTimeframe(e.target.value as any)} className="w-full px-4 py-2 border border-slate-300 dark:border-slate-600 dark:bg-slate-700 rounded-lg bg-white text-slate-900 dark:text-slate-100">
-                            <option value="week">This Week</option>
-                            <option value="month">This Month</option>
-                        </select>
-                    </div>
-                     <div>
-                        <label className="text-sm font-medium text-slate-700 dark:text-slate-300 block mb-2">Description</label>
-                        <input type="text" value={description} onChange={e => setDescription(e.target.value)} className="w-full px-4 py-2 border border-slate-300 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100 rounded-lg" />
-                    </div>
-                    <div className="mt-6 flex justify-end space-x-4">
-                        <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg bg-slate-200 text-slate-800 font-semibold hover:bg-slate-300 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600">Cancel</button>
-                        <button type="submit" className="px-4 py-2 rounded-lg bg-indigo-600 text-white font-semibold hover:bg-indigo-700">Set Goal</button>
-                    </div>
-                </form>
-            </div>
-        </div>
-    );
-}
-
-interface GoalsViewProps {
-    goals: Goal[];
-    deleteGoal: (goalId: string) => void;
-    addGoal: (goal: Omit<Goal, 'id' | 'currentValue' | 'startDate' | 'status'>) => void;
-    reports: Report[];
-}
-
-const GoalsView: React.FC<GoalsViewProps> = ({ goals, deleteGoal, addGoal, reports }) => {
-    const [isModalOpen, setIsModalOpen] = useState(false);
-    const activeGoals = useMemo(() => goals.filter(g => g.status === 'active'), [goals]);
-    const completedGoals = useMemo(() => goals.filter(g => g.status === 'completed'), [goals]);
-
-    const GoalCard: React.FC<{ goal: Goal }> = ({ goal }) => {
-        const progress = goal.targetValue > 0 ? (goal.currentValue / goal.targetValue) * 100 : 0;
-        const progressClamped = Math.min(100, progress);
-
-        return (
-             <div className="bg-white dark:bg-slate-800 p-4 rounded-xl shadow-md">
-                <div className="flex justify-between items-start">
-                    <div className="flex-1 pr-4">
-                        <p className="font-semibold text-slate-800 dark:text-slate-100">{goal.description}</p>
-                        <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">{GoalService.getMotivationalMessage(goal)}</p>
-                    </div>
-                    <button onClick={() => deleteGoal(goal.id)} className="p-2 text-slate-400 hover:text-red-500 rounded-full hover:bg-red-50 dark:hover:bg-slate-700">
-                        <Icons.TrashIcon className="w-5 h-5" />
-                    </button>
-                </div>
-                <div className="mt-4">
-                     <div className="flex justify-between items-center mb-1">
-                        <span className="text-sm font-medium text-slate-500 dark:text-slate-400">Progress</span>
-                        <span className="text-sm font-bold text-indigo-600 dark:text-indigo-400">
-                           {goal.type === 'completion' ? `${Math.round(goal.currentValue)} / ${goal.targetValue} tests` : `${goal.currentValue.toFixed(0)}% / ${goal.targetValue}% gain`}
-                        </span>
-                    </div>
-                    <div className="w-full bg-slate-200 dark:bg-slate-700 rounded-full h-3">
-                        <div className={`h-3 rounded-full transition-all duration-500 ${goal.status === 'completed' ? 'bg-emerald-500' : 'bg-indigo-600'}`} style={{ width: `${progressClamped}%` }}></div>
-                    </div>
-                </div>
-            </div>
-        )
-    }
-
-    return (
-        <div className="p-4 md:p-8">
-             <div className="flex justify-between items-center mb-6">
-                <h2 className="text-3xl font-bold text-slate-800 dark:text-slate-100">My Study Goals</h2>
-                <button onClick={() => setIsModalOpen(true)} className="bg-indigo-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-indigo-700 flex items-center space-x-2">
-                    <Icons.FilePlusIcon className="w-5 h-5" />
-                    <span>New Goal</span>
-                </button>
-            </div>
-            
-            <div className="space-y-6">
-                <div>
-                    <h3 className="text-xl font-semibold text-slate-700 dark:text-slate-200 mb-4">Active Goals</h3>
-                    {activeGoals.length > 0 ? (
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                            {activeGoals.map(goal => <GoalCard key={goal.id} goal={goal} />)}
-                        </div>
-                    ) : (
-                         <div className="text-center py-12 bg-white dark:bg-slate-800 rounded-xl shadow-md">
-                            <Icons.TargetIcon className="w-16 h-16 mx-auto text-slate-300 dark:text-slate-600"/>
-                            <h3 className="mt-2 text-xl font-semibold text-slate-800 dark:text-slate-100">No Active Goals</h3>
-                            <p className="mt-1 text-slate-500 dark:text-slate-400">Click 'New Goal' to set a new target for yourself!</p>
-                        </div>
-                    )}
-                </div>
-
-                {completedGoals.length > 0 && (
-                    <div>
-                        <h3 className="text-xl font-semibold text-slate-700 dark:text-slate-200 mb-4">Completed Goals</h3>
-                         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                            {completedGoals.map(goal => <GoalCard key={goal.id} goal={goal} />)}
-                        </div>
-                    </div>
-                )}
-            </div>
-            
-            <AddGoalModal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} onAddGoal={addGoal} reports={reports} />
-        </div>
     )
-}
+};
 
 
-// --- Main App Component ---
-
+// --- The Main App Component ---
 const App: React.FC = () => {
-    // State Management
-    const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
-    const [currentView, setCurrentView] = useState<AppView>('welcome');
-    const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem('teststar_theme') as Theme) || 'light');
-    const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+    const [userProfile, setUserProfile] = useLocalStorage<UserProfile | null>('userProfile', null);
+    const [reports, setReports] = useLocalStorage<Report[]>('reports', []);
+    const [goals, setGoals] = useLocalStorage<Goal[]>('goals', []);
+    const [theme, setTheme] = useLocalStorage<Theme>('theme', 'light');
+    const [hasSeenTour, setHasSeenTour] = useLocalStorage<boolean>('hasSeenTour', false);
+
+    const [currentView, setCurrentView] = useState<AppView>('dashboard');
     const [currentTest, setCurrentTest] = useState<Test | null>(null);
-    const [testAnswers, setTestAnswers] = useState<Answer[]>([]);
-    const [testResult, setTestResult] = useState<Report | null>(null);
-    const [reports, setReports] = useState<Report[]>([]);
-    const [goals, setGoals] = useState<Goal[]>([]);
-    const [viewingReport, setViewingReport] = useState<Report | null>(null);
-    const [isLoading, setIsLoading] = useState(false);
-    const [error, setError] = useState<string | null>(null);
-    const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
-    const [tutorInput, setTutorInput] = useState('');
-    const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
-    const [funContent, setFunContent] = useState<string | null>(null);
-    const [funContentError, setFunContentError] = useState<string | null>(null);
-    const [studyNotes, setStudyNotes] = useState<string | null>(null);
-    const [studyNotesError, setStudyNotesError] = useState<string | null>(null);
-    const [newlyAwardedBadges, setNewlyAwardedBadges] = useState<string[]>([]);
-    const [confirmation, setConfirmation] = useState<{
-        isOpen: boolean;
-        title: string;
-        message: string;
-        onConfirm: () => void;
-        // FIX: Added onCancel to the state type to match the object passed to setConfirmation.
-        onCancel: () => void;
-        confirmText?: string;
-        cancelText?: string;
-        confirmButtonClass?: string;
-    } | null>(null);
-
-
-    // --- Effects ---
+    const [currentReport, setCurrentReport] = useState<Report | null>(null);
+    
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState('');
+    const [newlyEarnedBadges, setNewlyEarnedBadges] = useState<{name: string, icon: string, description: string}[]>([]);
+    const [reportToDelete, setReportToDelete] = useState<string | null>(null);
+    const [isTourActive, setIsTourActive] = useState(false);
 
     useEffect(() => {
-        const root = window.document.documentElement;
-        if (theme === 'dark') {
-            root.classList.add('dark');
-        } else {
-            root.classList.remove('dark');
-        }
-        localStorage.setItem('teststar_theme', theme);
+        document.documentElement.classList.toggle('dark', theme === 'dark');
     }, [theme]);
 
+    useEffect(() => {
+      if(userProfile) {
+         // GoalService.updateGoalProgress returns a new array, which could cause an infinite loop
+         // if we don't check for actual changes before setting state.
+         const updatedGoals = GoalService.updateGoalProgress(goals, reports);
+         if (JSON.stringify(updatedGoals) !== JSON.stringify(goals)) {
+            setGoals(updatedGoals);
+         }
+      }
+    }, [reports, userProfile, goals, setGoals]);
 
     useEffect(() => {
-        const savedProfile = localStorage.getItem('teststar_userProfile');
-        if (savedProfile) {
-            const profile = JSON.parse(savedProfile);
-            // Ensure profile has a badges array for backwards compatibility
-            if (!profile.badges) {
-                profile.badges = [];
+        // Use a small delay to ensure the dashboard has rendered for the tour
+        const timer = setTimeout(() => {
+            if (!hasSeenTour && currentView === 'dashboard') {
+                setIsTourActive(true);
+            } else {
+                setIsTourActive(false);
             }
-            if (!profile.feedbackPreference) {
-                profile.feedbackPreference = 'full';
-            }
-            setUserProfile(profile);
-            setCurrentView('dashboard');
-        }
-        const savedReports = localStorage.getItem('teststar_reports');
-        if (savedReports) {
-            setReports(JSON.parse(savedReports));
-        }
-        const savedGoals = localStorage.getItem('teststar_goals');
-        if (savedGoals) {
-            setGoals(JSON.parse(savedGoals));
-        }
-    }, []);
+        }, 500);
 
-    useEffect(() => {
-        // Proactively offer help from the AI tutor based on weak areas
-        if (currentView === 'tutor' && userProfile && chatHistory.length === 0 && reports.length > 0) {
-            const topicCounts: { [key: string]: number } = {};
-            reports.forEach(report => {
-                // Ensure weakAreas is an array before iterating
-                if (Array.isArray(report.weakAreas)) {
-                    report.weakAreas.forEach(topic => {
-                        topicCounts[topic] = (topicCounts[topic] || 0) + 1;
-                    });
-                }
-            });
+        return () => clearTimeout(timer);
+    }, [hasSeenTour, currentView]);
 
-            // Find topics that have appeared as weak areas more than once
-            const recurringWeakTopics = Object.entries(topicCounts)
-                .filter(([, count]) => count > 1)
-                .sort((a, b) => b[1] - a[1]) // Sort by frequency, descending
-                .map(([topic]) => topic)
-                .slice(0, 2); // Get the top 2 most frequent weak topics
-
-            if (recurringWeakTopics.length > 0) {
-                // Format the topic list for the message
-                const topicList = recurringWeakTopics.length > 1 
-                    ? `${recurringWeakTopics[0]} and ${recurringWeakTopics[1]}` 
-                    : recurringWeakTopics[0];
-
-                const initialTutorMessage: ChatMessage = {
-                    role: 'model',
-                    text: `Hello, ${userProfile.name}! I've noticed you've had some challenges with **${topicList}** in your recent tests. Would you like me to explain one of these concepts for you, or is there something else I can help with today?`
-                };
-                setChatHistory([initialTutorMessage]);
-            }
-        }
-    }, [currentView, userProfile, reports]);
-
-    // --- Handlers ---
-    const toggleTheme = () => {
-        setTheme(prevTheme => prevTheme === 'light' ? 'dark' : 'light');
+    const handleTourComplete = () => {
+        setHasSeenTour(true);
+        setIsTourActive(false);
     };
 
-    const showConfirmation = (props: Omit<NonNullable<typeof confirmation>, 'isOpen' | 'onCancel'>) => {
-        setConfirmation({ ...props, isOpen: true, onCancel: hideConfirmation });
-    };
-
-    const hideConfirmation = () => {
-        setConfirmation(null);
-    };
-
-    const handleProfileCreate = (profile: UserProfile) => {
-        const profileWithDefaults: UserProfile = { 
-            ...profile, 
-            badges: profile.badges || [], 
-            feedbackPreference: 'full'
-        };
-        localStorage.setItem('teststar_userProfile', JSON.stringify(profileWithDefaults));
-        setUserProfile(profileWithDefaults);
+    const handleProfileCreate = (profileData: Omit<UserProfile, 'badges'>) => {
+        const newUserProfile: UserProfile = { ...profileData, badges: [], feedbackPreference: 'summary' };
+        setUserProfile(newUserProfile);
         setCurrentView('dashboard');
     };
     
-    const handleLogout = () => {
-        localStorage.removeItem('teststar_userProfile');
-        localStorage.removeItem('teststar_reports');
-        localStorage.removeItem('teststar_goals');
-        setUserProfile(null);
-        setReports([]);
-        setGoals([]);
-        setCurrentView('welcome');
-        setChatHistory([]);
-    };
-    
-    const updateUserProfile = (updatedProfile: UserProfile) => {
-        setUserProfile(updatedProfile);
-        localStorage.setItem('teststar_userProfile', JSON.stringify(updatedProfile));
+    const handleTestCreated = (test: Test) => {
+        setCurrentTest(test);
+        setCurrentView('test');
     };
 
-    const updateGoals = (updatedGoals: Goal[]) => {
-        setGoals(updatedGoals);
-        localStorage.setItem('teststar_goals', JSON.stringify(updatedGoals));
+    const handleStartRandomQuiz = async () => {
+        if (!userProfile) return;
+        setLoading(true);
+        setError('');
+        try {
+            const questions = await GeminiService.generateRandomQuiz(userProfile.grade, userProfile.board);
+            const randomTest: Test = {
+                id: `test_random_${Date.now()}`,
+                subject: 'General Knowledge',
+                chapter: 'Quick Quiz',
+                questions: questions
+            };
+            handleTestCreated(randomTest);
+        } catch (err: any) {
+            setError(err.message || "Failed to create the quiz. Please try again.");
+        } finally {
+            setLoading(false);
+        }
     };
 
-    const addGoal = (newGoalData: Omit<Goal, 'id' | 'currentValue' | 'startDate' | 'status'>) => {
-        const newGoal: Goal = {
-            ...newGoalData,
-            id: `goal_${Date.now()}`,
-            currentValue: 0,
-            startDate: new Date().toISOString(),
-            status: 'active',
-        };
-        const allGoals = [newGoal, ...goals];
-        const updatedGoals = GoalService.updateGoalProgress(allGoals, reports);
-        updateGoals(updatedGoals);
-    };
-
-    const deleteGoal = (goalId: string) => {
-        showConfirmation({
-            title: "Delete Goal?",
-            message: "Are you sure you want to delete this goal? This cannot be undone.",
-            onConfirm: () => {
-                const updatedGoals = goals.filter(g => g.id !== goalId);
-                updateGoals(updatedGoals);
-                hideConfirmation();
-            },
-            confirmText: "Delete",
-            confirmButtonClass: "bg-red-600 hover:bg-red-700 focus:ring-red-500",
-        });
-    };
-    
-    const submitTest = async (timeTaken: number) => {
+    const handleTestSubmit = (answers: Answer[], timeTaken: number) => {
         if (!currentTest || !userProfile) return;
-        setIsLoading(true);
-        
-        const feedbackPref = userProfile.feedbackPreference || 'full';
-        
+
         let correctCount = 0;
-        let totalMcqMarks = 0;
         let marksScored = 0;
-        const totalMarks = currentTest.questions.reduce((sum, q) => sum + q.marks, 0);
-
-        const processedAnswers = await Promise.all(testAnswers.map(async (ans, index) => {
-            const question = currentTest.questions[index];
+        const mcqQuestions = currentTest.questions.filter(q => q.questionType === 'MCQ');
+        const totalMcqMarks = mcqQuestions.reduce((sum, q) => sum + q.marks, 0);
+        const processedAnswers: Answer[] = [];
+        const weakAreas = new Set<string>();
+        
+        currentTest.questions.forEach((q, index) => {
+            const answer = answers[index] || { questionIndex: index };
             let isCorrect: boolean | undefined = undefined;
-            let solution = question.modelAnswer;
 
-            if (question.questionType === 'MCQ') {
-                totalMcqMarks += question.marks;
-                isCorrect = ans.selectedOptionIndex === question.correctOptionIndex;
+            if (q.questionType === 'MCQ') {
+                isCorrect = answer.selectedOptionIndex === q.correctOptionIndex;
                 if (isCorrect) {
                     correctCount++;
-                    marksScored += question.marks;
-                } else if (question.options && ans.selectedOptionIndex !== undefined) {
-                    if (feedbackPref === 'full') {
-                        try {
-                            solution = await GeminiService.generateSolution(question, question.options[ans.selectedOptionIndex] ?? "No answer", userProfile.grade);
-                        } catch (e) {
-                            solution = "Could not generate a solution at this time.";
-                        }
-                    } else {
-                        solution = undefined; // Don't generate solution for summary
-                    }
+                    marksScored += q.marks;
+                } else {
+                    weakAreas.add(q.topic);
                 }
             }
-            return { ...ans, isCorrect, solution };
-        }));
-
-        const score = totalMcqMarks > 0 ? (marksScored / totalMcqMarks) * 100 : 0;
-        const weakAreas = [...new Set(processedAnswers.filter(a => a.isCorrect === false).map(a => currentTest.questions[a.questionIndex].topic))];
+            processedAnswers.push({ ...answer, isCorrect });
+        });
         
+        const score = totalMcqMarks > 0 ? (marksScored / totalMcqMarks) * 100 : 100;
+
         const newReport: Report = {
-            id: `rep_${Date.now()}`,
-            testId: currentTest.id,
+            id: `report_${Date.now()}`,
             subject: currentTest.subject,
             chapter: currentTest.chapter,
             score: score,
-            totalMarks: totalMarks,
+            totalMarks: currentTest.questions.reduce((sum, q) => sum + q.marks, 0),
             marksScored: marksScored,
             totalQuestions: currentTest.questions.length,
             correctAnswers: correctCount,
-            timeTaken,
+            timeTaken: timeTaken,
             date: new Date().toISOString(),
-            weakAreas,
+            weakAreas: Array.from(weakAreas),
             answers: processedAnswers,
             questions: currentTest.questions,
-            feedbackPreference: feedbackPref,
+            feedbackPreference: userProfile?.feedbackPreference || 'summary',
         };
-
-        setTestResult(newReport);
+        
+        const updatedReports = [...reports, newReport];
+        setReports(updatedReports);
+        setCurrentReport(newReport);
+        setCurrentTest(null);
         setCurrentView('results');
-        setIsLoading(false);
-    };
 
-    const handleConfirmAndSubmitTest = (timeTaken: number) => {
-        const unansweredQuestions = testAnswers.filter(a =>
-            (a.selectedOptionIndex === undefined || a.selectedOptionIndex === null) &&
-            (!a.writtenAnswer || a.writtenAnswer.trim() === '')
-        ).length;
-
-        let message = "You are about to submit your test. Are you sure you want to proceed?";
-        if (unansweredQuestions > 0) {
-            message = `You have ${unansweredQuestions} unanswered question${unansweredQuestions > 1 ? 's' : ''}. Are you sure you want to submit?`;
+        // Check for new badges
+        const oldBadges = userProfile.badges || [];
+        const newBadgeIds = BadgeService.checkAllBadges(updatedReports);
+        const newlyEarnedIds = newBadgeIds.filter(id => !oldBadges.includes(id));
+        if (newlyEarnedIds.length > 0) {
+            setUserProfile(p => p ? ({ ...p, badges: [...p.badges, ...newlyEarnedIds] }) : null);
+            const badgeDetails = newlyEarnedIds.map(id => BADGES.find(b => b.id === id)).filter(Boolean) as {name: string, icon: string, description: string}[];
+            setNewlyEarnedBadges(badgeDetails);
         }
-
-        showConfirmation({
-            title: "Submit Test?",
-            message: message,
-            confirmText: "Submit",
-            confirmButtonClass: "bg-indigo-600 hover:bg-indigo-700 focus:ring-indigo-500",
-            onConfirm: () => {
-                submitTest(timeTaken);
-                hideConfirmation();
-            }
-        });
     };
     
-    const saveReport = () => {
-        if (!testResult || !userProfile) return;
-        if (reports.some(r => r.id === testResult.id)) {
-            return;
-        }
-        const updatedReports = [testResult, ...reports];
-        setReports(updatedReports);
-        localStorage.setItem('teststar_reports', JSON.stringify(updatedReports));
-
-        // Update goal progress
-        const updatedGoals = GoalService.updateGoalProgress(goals, updatedReports);
-        updateGoals(updatedGoals);
-        
-        // Check for new badges
-        const currentBadges = userProfile.badges || [];
-        const allEarnedBadges = BadgeService.checkAllBadges(updatedReports);
-        const newBadges = allEarnedBadges.filter(b => !currentBadges.includes(b));
-        
-        if (newBadges.length > 0) {
-            setNewlyAwardedBadges(newBadges);
-            const updatedProfile = { ...userProfile, badges: allEarnedBadges };
-            setUserProfile(updatedProfile);
-            localStorage.setItem('teststar_userProfile', JSON.stringify(updatedProfile));
+    const viewReportDetail = (reportId: string) => {
+        const report = reports.find(r => r.id === reportId);
+        if (report) {
+            setCurrentReport(report);
+            setCurrentView('reportDetail');
         }
     };
 
     const handleDeleteReport = (reportId: string) => {
-        showConfirmation({
-            title: "Delete Report?",
-            message: "Are you sure you want to delete this report? This action is permanent and cannot be undone.",
-            confirmText: "Delete",
-            confirmButtonClass: "bg-red-600 hover:bg-red-700 focus:ring-red-500",
-            onConfirm: () => {
-                setReports(currentReports => {
-                    const updatedReports = currentReports.filter(r => r.id !== reportId);
-                    localStorage.setItem('teststar_reports', JSON.stringify(updatedReports));
-                    return updatedReports;
-                });
+        setReportToDelete(reportId);
+    };
 
-                if (viewingReport?.id === reportId) {
-                    setViewingReport(null);
-                    setCurrentView('reports');
-                }
-                hideConfirmation();
-            }
-        });
+    const handleConfirmDelete = () => {
+        if (reportToDelete) {
+            setReports(reports => reports.filter(r => r.id !== reportToDelete));
+            setReportToDelete(null);
+        }
+    };
+
+    const handleCancelDelete = () => {
+        setReportToDelete(null);
     };
     
-    const handleTutorSubmit = async (e: React.FormEvent) => {
-        e.preventDefault();
-        if (!tutorInput.trim() || !userProfile) return;
-
-        const newHistory: ChatMessage[] = [...chatHistory, { role: 'user', text: tutorInput }];
-        setChatHistory(newHistory);
-        const currentInput = tutorInput;
-        setTutorInput('');
-        setIsLoading(true);
-
-        try {
-            const response = await GeminiService.getTutorResponse(currentInput, userProfile);
-            setChatHistory(prev => [...prev, { role: 'model', text: response }]);
-        } catch (err: any) {
-            setChatHistory(prev => [...prev, { role: 'model', text: `Error: ${err.message}` }]);
-        } finally {
-            setIsLoading(false);
-        }
+    const handleUpdateProfile = (updatedProfile: UserProfile) => {
+        setUserProfile(updatedProfile);
     };
 
-    const handleGenerateFunContent = async (type: 'poem' | 'story', topic: string) => {
-        if (!userProfile) return;
-        setIsLoading(true);
-        setFunContent(null);
-        setFunContentError(null);
-        setStudyNotes(null);
-        setStudyNotesError(null);
-        try {
-            const content = await GeminiService.generateFunContent(type, topic, userProfile.grade);
-            setFunContent(content);
-        } catch (err: any) {
-            setFunContentError(err.message);
-        } finally {
-            setIsLoading(false);
-        }
-    };
-
-    const handleGenerateStudyNotes = async (topic: string) => {
-        if (!userProfile) return;
-        setIsLoading(true);
-        setStudyNotes(null);
-        setStudyNotesError(null);
-        setFunContent(null);
-        setFunContentError(null);
-        try {
-            const notes = await GeminiService.generateStudyNotes(topic, userProfile.grade, userProfile.board);
-            setStudyNotes(notes);
-        } catch (err: any) {
-            setStudyNotesError(err.message);
-        } finally {
-            setIsLoading(false);
-        }
-    };
-
-
-    const handleGenerateRandomQuiz = async () => {
-        if (!userProfile) return;
-        setIsLoading(true);
-        setError(null);
-        try {
-            const questions = await GeminiService.generateRandomQuiz(userProfile.grade, userProfile.board);
-            const newTest: Test = { 
-                id: `quiz_${Date.now()}`, 
-                subject: 'General Knowledge', 
-                chapter: 'Random Quiz',
-                questions 
-            };
-            setCurrentTest(newTest);
-            setTestAnswers(new Array(questions.length).fill(null).map((_, i) => ({ questionIndex: i })));
-            setCurrentQuestionIndex(0);
-            setCurrentView('test');
-        } catch (err: any) {
-            setError(err.message || 'An unknown error occurred while creating the quiz.');
-        } finally {
-            setIsLoading(false);
-        }
-    };
+    const toggleTheme = () => {
+        setTheme(prev => prev === 'light' ? 'dark' : 'light');
+    }
     
-    // --- Render Logic ---
-    const handleNavClick = (view: AppView) => {
-        setCurrentView(view);
-        setIsSidebarOpen(false);
-    };
-
-    const renderView = () => {
-        if (!userProfile) return null;
-
-        switch (currentView) {
-            case 'welcome': return <WelcomeScreen onProfileCreate={handleProfileCreate} />;
-            case 'dashboard': return <DashboardView userProfile={userProfile} reports={reports} goals={goals} setCurrentView={setCurrentView}/>;
-            case 'createTest': return <CreateTestView userProfile={userProfile} isLoading={isLoading} setIsLoading={setIsLoading} setError={setError} setCurrentTest={setCurrentTest} setTestAnswers={setTestAnswers} setCurrentView={setCurrentView} setCurrentQuestionIndex={setCurrentQuestionIndex} />;
-            case 'test': return currentTest && <TestTakerView currentTest={currentTest} testAnswers={testAnswers} setTestAnswers={setTestAnswers} confirmAndSubmitTest={handleConfirmAndSubmitTest} currentQuestionIndex={currentQuestionIndex} setCurrentQuestionIndex={setCurrentQuestionIndex} isLoading={isLoading} />;
-            case 'results': return testResult && <TestResultsView testResult={testResult} reports={reports} saveReport={saveReport} setCurrentView={setCurrentView}/>;
-            case 'reports': return <ReportsListView reports={reports} setViewingReport={setViewingReport} setCurrentView={setCurrentView} deleteReport={handleDeleteReport} />;
-            case 'reportDetail': return viewingReport && <ReportDetailView viewingReport={viewingReport} setCurrentView={setCurrentView}/>;
-            case 'goals': return <GoalsView goals={goals} deleteGoal={deleteGoal} addGoal={addGoal} reports={reports} />;
-            case 'tutor': return <AiTutorView chatHistory={chatHistory} tutorInput={tutorInput} setTutorInput={setTutorInput} isLoading={isLoading} handleTutorSubmit={handleTutorSubmit} />;
-            case 'poemsAndStories': return <FunLearningView 
-                isLoading={isLoading} 
-                funContent={funContent} 
-                funContentError={funContentError} 
-                handleGenerateFunContent={handleGenerateFunContent} 
-                handleGenerateRandomQuiz={handleGenerateRandomQuiz}
-                studyNotes={studyNotes}
-                studyNotesError={studyNotesError}
-                handleGenerateStudyNotes={handleGenerateStudyNotes} 
-            />;
-            case 'settings': return <SettingsView userProfile={userProfile} updateUserProfile={updateUserProfile} />;
-            default: return <DashboardView userProfile={userProfile} reports={reports} goals={goals} setCurrentView={setCurrentView} />;
-        }
-    };
-    
-
     if (!userProfile) {
         return <WelcomeScreen onProfileCreate={handleProfileCreate} />;
     }
 
+    const renderView = () => {
+        if (loading) return <Spinner fullscreen />;
+        if (error) return <ErrorDisplay message={error} />;
+
+        switch (currentView) {
+            case 'dashboard':
+                return <DashboardView userProfile={userProfile} reports={reports} goals={goals} onStartTest={() => setCurrentView('createTest')} onStartRandomQuiz={handleStartRandomQuiz} onViewReport={viewReportDetail} onViewGoals={() => setCurrentView('goals')} />;
+            case 'createTest':
+                return <CreateTestView userProfile={userProfile} onTestCreated={handleTestCreated} setLoading={setLoading} setError={setError} />;
+            case 'test':
+                return currentTest ? <TestTakerView test={currentTest} onSubmit={handleTestSubmit} /> : <ErrorDisplay message="No active test found."/>;
+            case 'results':
+                return currentReport ? <ResultsView report={currentReport} onViewDetails={() => setCurrentView('reportDetail')} onGoToDashboard={() => setCurrentView('dashboard')} /> : <ErrorDisplay message="No report found."/>;
+            case 'reports':
+                return <ReportsView reports={reports} onViewReport={viewReportDetail} onDeleteReport={handleDeleteReport} />;
+            case 'reportDetail':
+                 return currentReport ? <ReportDetailView report={currentReport} /> : <ErrorDisplay message="Report not found."/>;
+            case 'tutor':
+                return <AiTutorView userProfile={userProfile} />;
+            case 'studyNotes':
+                return <StudyNotesView userProfile={userProfile} />;
+            case 'poemsAndStories':
+                return <PoemsAndStoriesView userProfile={userProfile} />;
+            case 'settings':
+                return <SettingsView userProfile={userProfile} onUpdateProfile={handleUpdateProfile} />;
+            case 'goals':
+                return <GoalsView goals={goals} setGoals={setGoals} />;
+            case 'studyPlanner':
+                return <StudyPlannerView reports={reports} goals={goals} userProfile={userProfile} />;
+            default:
+                return <DashboardView userProfile={userProfile} reports={reports} goals={goals} onStartTest={() => setCurrentView('createTest')} onStartRandomQuiz={handleStartRandomQuiz} onViewReport={viewReportDetail} onViewGoals={() => setCurrentView('goals')} />;
+        }
+    };
+
     return (
-        <div className="h-screen bg-slate-50 dark:bg-slate-900 flex overflow-hidden">
-            <div className="hidden md:flex flex-shrink-0">
-                <Sidebar userProfile={userProfile} currentView={currentView} onNavClick={handleNavClick} onLogout={handleLogout} theme={theme} toggleTheme={toggleTheme} />
-            </div>
-
-            <div className={`fixed inset-0 z-40 transition-opacity duration-300 md:hidden ${isSidebarOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
-                <div className="absolute inset-0 bg-black/50" onClick={() => setIsSidebarOpen(false)}></div>
-                <div className={`relative z-10 h-full w-64 transition-transform duration-300 ${isSidebarOpen ? 'transform-none' : '-translate-x-full'}`}>
-                    <Sidebar userProfile={userProfile} currentView={currentView} onNavClick={handleNavClick} onLogout={handleLogout} theme={theme} toggleTheme={toggleTheme}/>
-                </div>
-            </div>
-
-            <div className="flex-1 flex flex-col min-w-0">
-                <Header currentView={currentView} viewingReport={viewingReport} onMenuClick={() => setIsSidebarOpen(true)} />
-                <main className="flex-1 overflow-y-auto pt-16 md:pt-0">
-                    {isLoading && currentView !== 'tutor' && currentView !== 'poemsAndStories' && currentView !== 'test' ? <Spinner /> : error ? <ErrorDisplay message={error}/> : renderView()}
-                </main>
-            </div>
-            
-            {confirmation?.isOpen && (
-                <ConfirmationModal
-                    isOpen={confirmation.isOpen}
-                    title={confirmation.title}
-                    message={confirmation.message}
-                    onConfirm={confirmation.onConfirm}
-                    // FIX: Use onCancel from the confirmation state object for consistency.
-                    onCancel={confirmation.onCancel}
-                    confirmText={confirmation.confirmText}
-                    confirmButtonClass={confirmation.confirmButtonClass}
-                    cancelText={confirmation.cancelText}
-                />
-            )}
-            {newlyAwardedBadges.length > 0 && (
-                <BadgeNotificationModal 
-                    badges={BADGES.filter(b => newlyAwardedBadges.includes(b.id))}
-                    onClose={() => setNewlyAwardedBadges([])}
-                />
-            )}
-        </div>
+        <>
+            <ConfirmationModal
+                isOpen={!!reportToDelete}
+                title="Delete Report"
+                message="Are you sure you want to permanently delete this report? This action cannot be undone."
+                onConfirm={handleConfirmDelete}
+                onCancel={handleCancelDelete}
+                confirmText="Delete"
+                confirmButtonClass="bg-red-600 hover:bg-red-700"
+            />
+            <BadgeNotificationModal badges={newlyEarnedBadges} onClose={() => setNewlyEarnedBadges([])} />
+            {isTourActive && <OnboardingTour onComplete={handleTourComplete} />}
+            <MainLayout
+                currentView={currentView}
+                setView={setCurrentView}
+                userProfile={userProfile}
+                theme={theme}
+                toggleTheme={toggleTheme}
+            >
+                {renderView()}
+            </MainLayout>
+        </>
     );
 };
 
