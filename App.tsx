@@ -889,7 +889,7 @@ const TestTakerView: React.FC<{
     
     const handlePrev = () => {
         if (currentQuestionIndex > 0) {
-            setCurrentQuestionIndex(i => i + 1);
+            setCurrentQuestionIndex(i => i - 1);
         }
     };
 
@@ -1621,16 +1621,20 @@ const App: React.FC = () => {
         document.documentElement.classList.toggle('dark', theme === 'dark');
     }, [theme]);
 
+    // FIX: Refactored this effect to prevent an infinite loop.
+    // It now uses a functional update for `setGoals` and removes `goals` from the dependency array.
+    // This ensures goal progress is recalculated only when reports change, not on every render.
     useEffect(() => {
       if(userProfile) {
-         // GoalService.updateGoalProgress returns a new array, which could cause an infinite loop
-         // if we don't check for actual changes before setting state.
-         const updatedGoals = GoalService.updateGoalProgress(goals, reports);
-         if (JSON.stringify(updatedGoals) !== JSON.stringify(goals)) {
-            setGoals(updatedGoals);
-         }
+         setGoals(currentGoals => {
+             const updatedGoals = GoalService.updateGoalProgress(currentGoals, reports);
+             if (JSON.stringify(updatedGoals) !== JSON.stringify(currentGoals)) {
+                return updatedGoals;
+             }
+             return currentGoals;
+         });
       }
-    }, [reports, userProfile, goals, setGoals]);
+    }, [reports, userProfile, setGoals]);
 
     useEffect(() => {
         // Use a small delay to ensure the dashboard has rendered for the tour
